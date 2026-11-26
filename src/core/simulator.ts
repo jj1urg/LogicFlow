@@ -1,0 +1,1209 @@
+import { getGatePins, getInterfaceTotalWidth, getMuxConfig, getPinWorldPos } from './catalog';
+import {
+  addVectors,
+  BIT_0,
+  BIT_1,
+  BIT_X,
+  BIT_Z,
+  Bit,
+  bitAnd,
+  bitBuf,
+  bitNot,
+  bitOr,
+  bitXor,
+  compareVectors,
+  fromInt,
+  fromLiteral,
+  hasBusContention,
+  LogicValue,
+  makeUniform,
+  resizeValue,
+  resolveValues,
+  toUnsignedInt,
+  valuesEqual,
+  vecReduce,
+  vecTriBuf,
+  vecUnary,
+  XCause,
+} from './logic4';
+import {
+  CircuitDocument,
+  GateInstance,
+  PinDef,
+  Point,
+  ProjectDocument,
+  SequentialState,
+  SimulationSnapshot,
+} from './types';
+
+export function createEmptySequentialState(): SequentialState {
+  return {
+    registers: {},
+    prevClock: {},
+    ramData: {},
+    subStates: {},
+    prevNetValues: {},
+  };
+}
+
+function pinKey(gateId: string, pinId: string): string {
+  return `${gateId}:${pinId}`;
+}
+
+function ptKey(p: Point): string {
+  return `${Math.round(p.x)},${Math.round(p.y)}`;
+}
+
+/** Check if point `p` lies strictly on segment `(a, b)` within epsilon */
+function pointOnSegment(p: Point, a: Point, b: Point, eps = 3): boolean {
+  const minX = Math.min(a.x, b.x) - eps;
+  const maxX = Math.max(a.x, b.x) + eps;
+  const minY = Math.min(a.y, b.y) - eps;
+  const maxY = Math.max(a.y, b.y) + eps;
+  if (p.x < minX || p.x > maxX || p.y < minY || p.y > maxY) return false;
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq < 1e-6) return Math.hypot(p.x - a.x, p.y - a.y) <= eps;
+  const cross = Math.abs((p.x - a.x) * dy - (p.y - a.y) * dx);
+  return cross / Math.sqrt(lenSq) <= eps;
+}
+
+class UnionFind {
+  private parent = new Map<string, string>();
+  find(x: string): string {
+    const initial = this.parent.get(x);
+    if (initial === undefined) {
+      this.parent.set(x, x);
+      return x;
+    }
+    let p: string = initial;
+    while (p !== this.parent.get(p)) {
+      const gp: string = this.parent.get(p) ?? p;
+      this.parent.set(p, gp);
+      p = gp;
+    }
+    this.parent.set(x, p);
+    return p;
+  }
+  union(a: string, b: string): void {
+    const ra = this.find(a);
+    const rb = this.find(b);
+    if (ra !== rb) this.parent.set(ra, rb);
+  }
+}
+
+interface NetGraph {
+  pinToNet: Map<string, string>;
+  wireToNet: Map<string, string>;
+  netLabelToNet: Map<string, string>;
+  netPins: Map<string, { gateId: string; pin: PinDef }[]>;
+  netWidth: Map<string, number>;
+  /** Stable signature per driven net (sorted output pin keys) for persisting gate-level latch states */
+  netSig: Map<string, string>;
+  gatePins: Map<string, PinDef[]>;
+}
+
+/** Build connectivity graph from wires, pin positions, T-junctions, wire net labels, and tunnels */
+function buildNetGraph(circuit: CircuitDocument, project: ProjectDocument): NetGraph {
+  const uf = new UnionFind();
+  const gatePins = new Map<string, PinDef[]>();
+  const posToNode = new Map<string, string>();
+
+  const pinNodes: { key: string; gateId: string; pin: PinDef; pos: Point }[] = [];
+
+  for (const gate of circuit.gates) {
+    const pins = getGatePins(gate, project);
+    gatePins.set(gate.id, pins);
+    for (const pin of pins) {
+      const pKey = pinKey(gate.id, pin.id);
+      const node = `pin:${pKey}`;
+      uf.find(node);
+      const pos = getPinWorldPos(gate, pin);
+      pinNodes.push({ key: pKey, gateId: gate.id, pin, pos });
+
+      const pk = ptKey(pos);
+      const existing = posToNode.get(pk);
+      if (existing) uf.union(existing, node);
+      else posToNode.set(pk, node);
+
+      // Tunnels connect wirelessly by netName
+      if (gate.type === 'TUNNEL' && gate.props.netName?.trim()) {
+        const netNode = `label:${gate.props.netName.trim()}`;
+        uf.union(node, netNode);
+      }
+    }
+  }
+
+  // Register wires and their explicit endpoint refs + geometric connections
+  for (const wire of circuit.wires) {
+    const wNode = `wire:${wire.id}`;
+    uf.find(wNode);
+
+    if (wire.from) {
+      uf.union(wNode, `pin:${pinKey(wire.from.gateId, wire.from.pinId)}`);
+    }
+    if (wire.to) {
+      uf.union(wNode, `pin:${pinKey(wire.to.gateId, wire.to.pinId)}`);
+    }
+    if (wire.netLabel?.trim()) {
+      uf.union(wNode, `label:${wire.netLabel.trim()}`);
+    }
+
+    // Connect endpoints to pins or other wire endpoints at identical coordinates
+    const endpoints: Point[] = [];
+    if (wire.points.length > 0) {
+      endpoints.push(wire.points[0]);
+      if (wire.points.length > 1) endpoints.push(wire.points[wire.points.length - 1]);
+    }
+    for (const ep of endpoints) {
+      const pk = ptKey(ep);
+      const existing = posToNode.get(pk);
+      if (existing) uf.union(existing, wNode);
+      else posToNode.set(pk, wNode);
+    }
+  }
+
+  // T-junction detection: a FREE wire endpoint (not bound to a pin) landing onto another wire's segment connects them.
+  // Passing wires with explicit from/to pin refs must NEVER short-circuit unrelated pins or wires they pass beside!
+  for (let i = 0; i < circuit.wires.length; i++) {
+    const wa = circuit.wires[i];
+    if (wa.points.length < 2) continue;
+    const freeEnds: Point[] = [];
+    if (!wa.from) freeEnds.push(wa.points[0]);
+    if (!wa.to) freeEnds.push(wa.points[wa.points.length - 1]);
+    if (freeEnds.length === 0) continue;
+
+    for (let j = 0; j < circuit.wires.length; j++) {
+      if (i === j) continue;
+      const wb = circuit.wires[j];
+      for (let k = 0; k < wb.points.length - 1; k++) {
+        for (const ep of freeEnds) {
+          if (pointOnSegment(ep, wb.points[k], wb.points[k + 1], 4)) {
+            uf.union(`wire:${wa.id}`, `wire:${wb.id}`);
+          }
+        }
+      }
+    }
+  }
+
+  const pinToNet = new Map<string, string>();
+  const wireToNet = new Map<string, string>();
+  const netLabelToNet = new Map<string, string>();
+  const netPins = new Map<string, { gateId: string; pin: PinDef }[]>();
+  const netWidth = new Map<string, number>();
+
+  for (const pn of pinNodes) {
+    const root = uf.find(`pin:${pn.key}`);
+    pinToNet.set(pn.key, root);
+    let arr = netPins.get(root);
+    if (!arr) {
+      arr = [];
+      netPins.set(root, arr);
+    }
+    arr.push({ gateId: pn.gateId, pin: pn.pin });
+    const prevW = netWidth.get(root) ?? 0;
+    if (pn.pin.bitWidth > prevW) netWidth.set(root, pn.pin.bitWidth);
+  }
+
+  for (const wire of circuit.wires) {
+    const root = uf.find(`wire:${wire.id}`);
+    wireToNet.set(wire.id, root);
+    if (wire.netLabel?.trim()) {
+      netLabelToNet.set(wire.netLabel.trim(), root);
+    }
+    if (!netWidth.has(root)) netWidth.set(root, 1);
+  }
+
+  for (const gate of circuit.gates) {
+    if (gate.type === 'TUNNEL' && gate.props.netName?.trim()) {
+      const name = gate.props.netName.trim();
+      netLabelToNet.set(name, uf.find(`label:${name}`));
+    }
+  }
+
+  // Compute stable driver-pin signature per net so gate-level feedback latches retain state across edits & ticks
+  const netSig = new Map<string, string>();
+  for (const [netId, pins] of netPins.entries()) {
+    const drivers: string[] = [];
+    for (const p of pins) {
+      if (p.pin.dir === 'out') drivers.push(pinKey(p.gateId, p.pin.id));
+    }
+    if (drivers.length > 0) {
+      drivers.sort();
+      netSig.set(netId, drivers.join(','));
+    }
+  }
+
+  return { pinToNet, wireToNet, netLabelToNet, netPins, netWidth, netSig, gatePins };
+}
+
+export interface RuntimeInputOverride {
+  value?: string;
+  pressed?: boolean;
+  clockHigh?: boolean;
+}
+
+export interface CompiledCircuit {
+  circuit: CircuitDocument;
+  graph: NetGraph;
+  subCompiled: Record<string, CompiledCircuit>;
+}
+
+/**
+ * Pre-compile a circuit's connectivity graph (Union-Find netlist, pin tables, and nested subcircuits)
+ * once so subsequent simulation ticks run with zero netlist rebuilding overhead.
+ */
+export function compileCircuit(
+  circuit: CircuitDocument,
+  project: ProjectDocument,
+  visited = new Set<string>(),
+): CompiledCircuit {
+  const graph = buildNetGraph(circuit, project);
+  const subCompiled: Record<string, CompiledCircuit> = {};
+  const nextVisited = new Set(visited);
+  nextVisited.add(circuit.id);
+
+  for (const gate of circuit.gates) {
+    if (gate.type === 'SUBCIRCUIT' && gate.props.subcircuitId) {
+      const subId = gate.props.subcircuitId;
+      if (subCompiled[subId] || nextVisited.has(subId)) continue;
+      const subDoc = project.circuits[subId];
+      if (subDoc && !subDoc.isStub) {
+        subCompiled[subId] = compileCircuit(subDoc, project, nextVisited);
+      }
+    }
+  }
+
+  return { circuit, graph, subCompiled };
+}
+
+export interface SimulateOptions {
+  /** Override values for MODULE_IN ports (used when simulating a subcircuit) */
+  externalInputs?: Record<string, LogicValue>;
+  /** Lightweight runtime overrides for TOGGLE / BUTTON / CLOCK / MODULE_IN (avoids cloning ProjectDocument) */
+  runtimeInputs?: Record<string, RuntimeInputOverride>;
+  /** Recursion depth guard to prevent infinite cyclic module instantiation */
+  depth?: number;
+  /** Advance sequential edge-triggered elements on rising clock edges */
+  commitSequential?: boolean;
+  /** Internal guard to avoid nested unknown-X loop probes inside subcircuit probes */
+  skipUnknownLoopProbe?: boolean;
+  /** Persist settled net values into seqState.prevNetValues even when commitSequential is false */
+  persistNetValues?: boolean;
+}
+
+const MAX_DEPTH = 12;
+const MAX_DELTA_ITERATIONS = 48;
+const MAX_PROBE_ITERATIONS = 24;
+
+export function simulateCircuit(
+  circuit: CircuitDocument,
+  project: ProjectDocument,
+  seqState: SequentialState,
+  options: SimulateOptions = {},
+): SimulationSnapshot {
+  const compiled = compileCircuit(circuit, project);
+  return simulateCompiledCircuit(compiled, project, seqState, options);
+}
+
+export function simulateCompiledCircuit(
+  compiled: CompiledCircuit,
+  project: ProjectDocument,
+  seqState: SequentialState,
+  options: SimulateOptions = {},
+): SimulationSnapshot {
+  const { circuit, graph, subCompiled } = compiled;
+  const depth = options.depth ?? 0;
+  const commitSequential = options.commitSequential ?? true;
+
+  const netValues = new Map<string, LogicValue>();
+  const netXCauses = new Map<string, XCause>();
+  const prevNetMap = seqState.prevNetValues;
+  for (const [netId, w] of graph.netWidth.entries()) {
+    const sig = graph.netSig.get(netId);
+    const prev = sig && prevNetMap ? prevNetMap[sig] : undefined;
+    netValues.set(netId, prev ? resizeValue(prev, w, BIT_Z) : makeUniform(BIT_Z, w));
+  }
+
+  const gateInternalValues: Record<string, LogicValue> = {};
+  const subSnapshots: Record<string, SimulationSnapshot> = {};
+
+  // Helper to read an input pin's current net value resized to pin's width from an arbitrary netValue map
+  const makeReadPin =
+    (valsMap: Map<string, LogicValue>) =>
+    (gateId: string, pinId: string, width: number): LogicValue => {
+      const netId = graph.pinToNet.get(pinKey(gateId, pinId));
+      if (!netId) return makeUniform(BIT_Z, width);
+      const val = valsMap.get(netId);
+      if (!val) return makeUniform(BIT_Z, width);
+      return resizeValue(val, width, BIT_Z);
+    };
+  const readPin = makeReadPin(netValues);
+
+  // Track pending sequential updates to commit at end of stabilization (or immediately on rising edge)
+  const pendingClockEdges = new Map<string, boolean>();
+  const pendingNextReg = new Map<string, LogicValue>();
+  const pendingRamWrites: { gateId: string; addr: number; data: number; size: number }[] = [];
+
+  // Pre-seed registers & RAM in seqState
+  for (const gate of circuit.gates) {
+    if (
+      gate.type === 'SR_LATCH' ||
+      gate.type === 'D_LATCH' ||
+      gate.type === 'D_FF' ||
+      gate.type === 'JK_FF' ||
+      gate.type === 'T_FF' ||
+      gate.type === 'REGISTER' ||
+      gate.type === 'COUNTER'
+    ) {
+      const bw = Math.max(1, gate.props.bitWidth ?? 1);
+      if (!seqState.registers[gate.id] || seqState.registers[gate.id].width !== bw) {
+        seqState.registers[gate.id] = makeUniform(BIT_0, bw);
+      }
+    }
+    if (gate.type === 'RAM') {
+      const size = 1 << Math.max(1, Math.min(8, gate.props.addrBits ?? 4));
+      if (!seqState.ramData[gate.id] || seqState.ramData[gate.id].length !== size) {
+        const init = gate.props.memoryData ?? [];
+        const arr = new Array<number>(size).fill(0);
+        for (let i = 0; i < Math.min(size, init.length); i++) arr[i] = init[i];
+        seqState.ramData[gate.id] = arr;
+      }
+    }
+  }
+
+  let iterations = 0;
+  let oscillating = false;
+  let lastNetDriverCounts = new Map<string, number>();
+
+  /**
+   * Evaluate a single gate against `readPinFn`, pushing outputs to `drivePinFn`.
+   * When `recordSideEffects` is false (used by the read-only propagated-X loop reset probe),
+   * sequential state, pending writes, and snapshot maps are never mutated.
+   */
+  const evaluateGate = (
+    gate: GateInstance,
+    readPinFn: (gateId: string, pinId: string, width: number) => LogicValue,
+    drivePinFn: (gateId: string, pinId: string, val: LogicValue) => void,
+    recordSideEffects: boolean,
+    netStubDriven: Set<string>,
+    netOscSubDriven: Set<string>,
+  ) => {
+    const p = gate.props;
+    const bw = Math.max(1, p.bitWidth ?? 1);
+    const rt = options.runtimeInputs?.[gate.id];
+
+    switch (gate.type) {
+      case 'MODULE_IN': {
+        const ext = options.externalInputs?.[gate.id];
+        const valStr = rt?.value ?? p.value ?? '0';
+        const val = ext ? resizeValue(ext, bw, BIT_0) : fromLiteral(valStr, bw);
+        drivePinFn(gate.id, 'out', val);
+        break;
+      }
+      case 'TOGGLE': {
+        const valStr = rt?.value ?? p.value ?? '0';
+        drivePinFn(gate.id, 'out', fromLiteral(valStr, bw));
+        break;
+      }
+      case 'BUTTON': {
+        const pressed = rt?.pressed ?? !!p.pressed;
+        drivePinFn(gate.id, 'out', makeUniform(pressed ? BIT_1 : BIT_0, bw));
+        break;
+      }
+      case 'CLOCK': {
+        const high = rt?.clockHigh ?? !!p.clockHigh;
+        drivePinFn(gate.id, 'out', makeUniform(high ? BIT_1 : BIT_0, bw));
+        break;
+      }
+      case 'CONST': {
+        drivePinFn(gate.id, 'out', fromLiteral(p.value ?? '1', bw));
+        break;
+      }
+      case 'MODULE_OUT':
+      case 'LED':
+      case 'SEVEN_SEG':
+      case 'NUM_DISPLAY':
+      case 'TUNNEL':
+        // Pure sinks or passive nets
+        break;
+
+      case 'SPLITTER': {
+        const widths = p.splitWidths ?? [1, 1, 1, 1];
+        const total = widths.reduce((a, b) => a + b, 0);
+        const isSplit = (p.splitMode ?? 'split') === 'split';
+        if (isSplit) {
+          const busVal = readPinFn(gate.id, 'bus', total);
+          let cursor = 0;
+          widths.forEach((w, idx) => {
+            const slice = busVal.bits.slice(cursor, cursor + w);
+            cursor += w;
+            drivePinFn(gate.id, `b${idx}`, { width: w, bits: slice });
+          });
+        } else {
+          const merged: Bit[] = [];
+          widths.forEach((w, idx) => {
+            const part = readPinFn(gate.id, `b${idx}`, w);
+            merged.push(...part.bits);
+          });
+          drivePinFn(gate.id, 'bus', { width: total, bits: merged });
+        }
+        break;
+      }
+
+      case 'IFACE_BUNDLE': {
+        const fields = p.interfaceFields ?? [];
+        const total = getInterfaceTotalWidth(p);
+        const isPack = (p.bundleMode ?? 'pack') === 'pack';
+        if (isPack) {
+          const merged: Bit[] = [];
+          fields.forEach((f, idx) => {
+            const part = readPinFn(gate.id, `f_${idx}`, Math.max(1, f.bitWidth));
+            merged.push(...part.bits);
+          });
+          drivePinFn(gate.id, 'bundle', { width: total, bits: merged.length ? merged : [BIT_Z] });
+        } else {
+          const busVal = readPinFn(gate.id, 'bundle', total);
+          let cursor = 0;
+          fields.forEach((f, idx) => {
+            const w = Math.max(1, f.bitWidth);
+            const slice = busVal.bits.slice(cursor, cursor + w);
+            cursor += w;
+            drivePinFn(gate.id, `f_${idx}`, { width: w, bits: slice });
+          });
+        }
+        break;
+      }
+
+      case 'NOT': {
+        const a = readPinFn(gate.id, 'in0', bw);
+        drivePinFn(gate.id, 'out', vecUnary(a, bitNot));
+        break;
+      }
+      case 'BUF': {
+        const a = readPinFn(gate.id, 'in0', bw);
+        drivePinFn(gate.id, 'out', vecUnary(a, bitBuf));
+        break;
+      }
+      case 'TRIBUF': {
+        const a = readPinFn(gate.id, 'in0', bw);
+        const en = readPinFn(gate.id, 'en', 1).bits[0];
+        drivePinFn(gate.id, 'out', vecTriBuf(a, en));
+        break;
+      }
+      case 'AND':
+      case 'NAND':
+      case 'OR':
+      case 'NOR':
+      case 'XOR':
+      case 'XNOR': {
+        const n = Math.max(2, Math.min(8, p.inputCount ?? 2));
+        const ins: LogicValue[] = [];
+        for (let i = 0; i < n; i++) ins.push(readPinFn(gate.id, `in${i}`, bw));
+        let out: LogicValue;
+        if (gate.type === 'AND' || gate.type === 'NAND') {
+          out = vecReduce(ins, bw, bitAnd, BIT_1);
+        } else if (gate.type === 'OR' || gate.type === 'NOR') {
+          out = vecReduce(ins, bw, bitOr, BIT_0);
+        } else {
+          out = vecReduce(ins, bw, bitXor, BIT_0);
+        }
+        if (gate.type === 'NAND' || gate.type === 'NOR' || gate.type === 'XNOR') {
+          out = vecUnary(out, bitNot);
+        }
+        drivePinFn(gate.id, 'out', out);
+        break;
+      }
+
+      case 'MUX': {
+        const { channels, selectBits } = getMuxConfig(p);
+        const selVal = readPinFn(gate.id, 'sel', selectBits);
+        const selIdx = toUnsignedInt(selVal);
+        if (selIdx !== null) {
+          if (selIdx >= channels) {
+            drivePinFn(gate.id, 'out', makeUniform(BIT_X, bw));
+          } else {
+            const chosen = readPinFn(gate.id, `d${selIdx}`, bw);
+            drivePinFn(gate.id, 'out', vecUnary(chosen, bitBuf));
+          }
+        } else {
+          // Exact 4-state MUX: if all channels compatible with known select bits agree on a bit, emit it!
+          const maxCodes = 1 << selectBits;
+          const compatible: LogicValue[] = [];
+          let hasOutOfRange = false;
+          for (let code = 0; code < maxCodes; code++) {
+            let match = true;
+            for (let b = 0; b < selectBits; b++) {
+              const sb = selVal.bits[b];
+              const cb = (code >> b) & 1;
+              if ((sb === BIT_0 && cb !== 0) || (sb === BIT_1 && cb !== 1)) {
+                match = false;
+                break;
+              }
+            }
+            if (!match) continue;
+            if (code >= channels) {
+              hasOutOfRange = true;
+              break;
+            }
+            compatible.push(vecUnary(readPinFn(gate.id, `d${code}`, bw), bitBuf));
+          }
+          if (hasOutOfRange || compatible.length === 0) {
+            drivePinFn(gate.id, 'out', makeUniform(BIT_X, bw));
+          } else {
+            const bits: Bit[] = new Array(bw);
+            for (let b = 0; b < bw; b++) {
+              const first = compatible[0].bits[b];
+              let agree = first === BIT_0 || first === BIT_1;
+              for (let k = 1; agree && k < compatible.length; k++) {
+                if (compatible[k].bits[b] !== first) agree = false;
+              }
+              bits[b] = agree ? first : BIT_X;
+            }
+            drivePinFn(gate.id, 'out', { width: bw, bits });
+          }
+        }
+        break;
+      }
+
+      case 'DEMUX': {
+        const { channels, selectBits } = getMuxConfig(p);
+        const din = readPinFn(gate.id, 'in', bw);
+        const selVal = readPinFn(gate.id, 'sel', selectBits);
+        const selIdx = toUnsignedInt(selVal);
+        for (let i = 0; i < channels; i++) {
+          if (selIdx === null) {
+            drivePinFn(gate.id, `y${i}`, makeUniform(BIT_X, bw));
+          } else if (i === selIdx) {
+            drivePinFn(gate.id, `y${i}`, vecUnary(din, bitBuf));
+          } else {
+            drivePinFn(gate.id, `y${i}`, makeUniform(BIT_0, bw));
+          }
+        }
+        break;
+      }
+
+      case 'DECODER': {
+        const selBits = Math.max(1, Math.min(3, p.selectBits ?? 2));
+        const outs = 1 << selBits;
+        const enRaw = readPinFn(gate.id, 'en', 1).bits[0];
+        // Floating EN defaults to active (1) for convenience
+        const en = enRaw === BIT_Z ? BIT_1 : enRaw;
+        const selVal = readPinFn(gate.id, 'sel', selBits);
+        const selIdx = toUnsignedInt(selVal);
+        for (let i = 0; i < outs; i++) {
+          if (en === BIT_0) {
+            drivePinFn(gate.id, `y${i}`, makeUniform(BIT_0, 1));
+          } else if (en !== BIT_1 || selIdx === null) {
+            drivePinFn(gate.id, `y${i}`, makeUniform(BIT_X, 1));
+          } else {
+            drivePinFn(gate.id, `y${i}`, makeUniform(i === selIdx ? BIT_1 : BIT_0, 1));
+          }
+        }
+        break;
+      }
+
+      case 'HALF_ADDER': {
+        const a = readPinFn(gate.id, 'a', 1).bits[0];
+        const b = readPinFn(gate.id, 'b', 1).bits[0];
+        const s = bitXor(a, b);
+        const c = bitAnd(a, b);
+        drivePinFn(gate.id, 's', { width: 1, bits: [s] });
+        drivePinFn(gate.id, 'c', { width: 1, bits: [c] });
+        break;
+      }
+
+      case 'FULL_ADDER':
+      case 'ADDER': {
+        const w = gate.type === 'FULL_ADDER' ? 1 : bw;
+        const a = readPinFn(gate.id, 'a', w);
+        const b = readPinFn(gate.id, 'b', w);
+        const cinRaw = readPinFn(gate.id, 'cin', 1).bits[0];
+        const cin = cinRaw === BIT_Z ? BIT_0 : cinRaw;
+        const { sum, cout } = addVectors(a, b, cin, w);
+        drivePinFn(gate.id, 's', sum);
+        drivePinFn(gate.id, 'cout', { width: 1, bits: [cout] });
+        break;
+      }
+
+      case 'COMPARATOR': {
+        const a = readPinFn(gate.id, 'a', bw);
+        const b = readPinFn(gate.id, 'b', bw);
+        const { lt, eq, gt } = compareVectors(a, b, bw);
+        drivePinFn(gate.id, 'lt', { width: 1, bits: [lt] });
+        drivePinFn(gate.id, 'eq', { width: 1, bits: [eq] });
+        drivePinFn(gate.id, 'gt', { width: 1, bits: [gt] });
+        break;
+      }
+
+      case 'SR_LATCH': {
+        const s = readPinFn(gate.id, 's', 1).bits[0];
+        const r = readPinFn(gate.id, 'r', 1).bits[0];
+        let q = seqState.registers[gate.id] ?? makeUniform(BIT_0, 1);
+        if (s === BIT_1 && r === BIT_1) {
+          q = makeUniform(BIT_X, 1);
+        } else if (s === BIT_1 && (r === BIT_0 || r === BIT_Z)) {
+          q = makeUniform(BIT_1, 1);
+        } else if (r === BIT_1 && (s === BIT_0 || s === BIT_Z)) {
+          q = makeUniform(BIT_0, 1);
+        }
+        if (recordSideEffects) {
+          if (commitSequential) seqState.registers[gate.id] = q;
+          gateInternalValues[gate.id] = q;
+        }
+        drivePinFn(gate.id, 'q', q);
+        drivePinFn(gate.id, 'qn', vecUnary(q, bitNot));
+        break;
+      }
+
+      case 'D_LATCH': {
+        const d = readPinFn(gate.id, 'd', bw);
+        const en = readPinFn(gate.id, 'en', 1).bits[0];
+        let q = seqState.registers[gate.id] ?? makeUniform(BIT_0, bw);
+        if (en === BIT_1) {
+          q = vecUnary(d, bitBuf);
+          if (recordSideEffects && commitSequential) seqState.registers[gate.id] = q;
+        } else if (en === BIT_X) {
+          q = makeUniform(BIT_X, bw);
+        }
+        if (recordSideEffects) gateInternalValues[gate.id] = q;
+        drivePinFn(gate.id, 'q', q);
+        drivePinFn(gate.id, 'qn', vecUnary(q, bitNot));
+        break;
+      }
+
+      case 'D_FF':
+      case 'JK_FF':
+      case 'T_FF':
+      case 'REGISTER':
+      case 'COUNTER': {
+        const qCur = seqState.registers[gate.id] ?? makeUniform(BIT_0, bw);
+        const rstPin = gate.type === 'REGISTER' || gate.type === 'COUNTER' ? 'clr' : 'rst';
+        const rst = readPinFn(gate.id, rstPin, 1).bits[0];
+        const clk = readPinFn(gate.id, 'clk', 1).bits[0];
+        const prevClk = seqState.prevClock[gate.id] ?? BIT_0;
+        const rising = prevClk === BIT_0 && clk === BIT_1;
+
+        let qOut = qCur;
+        if (rst === BIT_1) {
+          qOut = makeUniform(BIT_0, bw);
+          if (recordSideEffects) pendingNextReg.set(gate.id, qOut);
+        } else if (rising && recordSideEffects) {
+          pendingClockEdges.set(gate.id, true);
+          if (gate.type === 'D_FF' || gate.type === 'REGISTER') {
+            const enRaw = readPinFn(gate.id, 'en', 1).bits[0];
+            const en = enRaw === BIT_Z ? BIT_1 : enRaw;
+            if (en === BIT_1) {
+              const d = readPinFn(gate.id, 'd', bw);
+              pendingNextReg.set(gate.id, vecUnary(d, bitBuf));
+            }
+          } else if (gate.type === 'JK_FF') {
+            const j = readPinFn(gate.id, 'j', 1).bits[0];
+            const k = readPinFn(gate.id, 'k', 1).bits[0];
+            const cur = qCur.bits[0];
+            let nextBit: Bit = cur;
+            if (j === BIT_0 && k === BIT_0) nextBit = cur;
+            else if (j === BIT_0 && k === BIT_1) nextBit = BIT_0;
+            else if (j === BIT_1 && k === BIT_0) nextBit = BIT_1;
+            else if (j === BIT_1 && k === BIT_1) nextBit = bitNot(cur);
+            else nextBit = BIT_X;
+            pendingNextReg.set(gate.id, { width: 1, bits: [nextBit] });
+          } else if (gate.type === 'T_FF') {
+            const t = readPinFn(gate.id, 't', 1).bits[0];
+            const cur = qCur.bits[0];
+            let nextBit: Bit = cur;
+            if (t === BIT_1) nextBit = bitNot(cur);
+            else if (t === BIT_X) nextBit = BIT_X;
+            pendingNextReg.set(gate.id, { width: 1, bits: [nextBit] });
+          } else if (gate.type === 'COUNTER') {
+            const enRaw = readPinFn(gate.id, 'en', 1).bits[0];
+            const en = enRaw === BIT_Z ? BIT_1 : enRaw;
+            if (en === BIT_1) {
+              const curU = toUnsignedInt(qCur);
+              const maxMask = (1 << bw) - 1;
+              const nextU = curU === null ? 0 : (curU + 1) & maxMask;
+              pendingNextReg.set(gate.id, fromInt(nextU, bw));
+            }
+          }
+        }
+
+        if (recordSideEffects) gateInternalValues[gate.id] = qOut;
+        drivePinFn(gate.id, 'q', qOut);
+        if (gate.type === 'D_FF' || gate.type === 'JK_FF' || gate.type === 'T_FF') {
+          drivePinFn(gate.id, 'qn', vecUnary(qOut, bitNot));
+        } else if (gate.type === 'COUNTER') {
+          const curU = toUnsignedInt(qOut);
+          const maxVal = (1 << bw) - 1;
+          const ovf: Bit = curU === null ? BIT_X : curU === maxVal ? BIT_1 : BIT_0;
+          drivePinFn(gate.id, 'ovf', { width: 1, bits: [ovf] });
+        }
+        break;
+      }
+
+      case 'RAM': {
+        const ab = Math.max(1, Math.min(8, p.addrBits ?? 4));
+        const db = Math.max(1, Math.min(16, p.dataBits ?? 4));
+        const size = 1 << ab;
+        const mem = seqState.ramData[gate.id] ?? new Array<number>(size).fill(0);
+        const addrVal = readPinFn(gate.id, 'addr', ab);
+        const addr = toUnsignedInt(addrVal);
+        const oeRaw = readPinFn(gate.id, 'oe', 1).bits[0];
+        const oe = oeRaw === BIT_Z ? BIT_1 : oeRaw;
+        const we = readPinFn(gate.id, 'we', 1).bits[0];
+        const clk = readPinFn(gate.id, 'clk', 1).bits[0];
+        const prevClk = seqState.prevClock[gate.id] ?? BIT_0;
+
+        if (
+          recordSideEffects &&
+          prevClk === BIT_0 &&
+          clk === BIT_1 &&
+          we === BIT_1 &&
+          addr !== null
+        ) {
+          const din = toUnsignedInt(readPinFn(gate.id, 'din', db));
+          if (din !== null) {
+            pendingRamWrites.push({ gateId: gate.id, addr: addr % size, data: din, size });
+          }
+        }
+
+        if (oe === BIT_0) {
+          drivePinFn(gate.id, 'dout', makeUniform(BIT_Z, db));
+        } else if (oe !== BIT_1 || addr === null) {
+          drivePinFn(gate.id, 'dout', makeUniform(BIT_X, db));
+        } else {
+          drivePinFn(gate.id, 'dout', fromInt(mem[addr % size] ?? 0, db));
+        }
+        break;
+      }
+
+      case 'ROM': {
+        const ab = Math.max(1, Math.min(8, p.addrBits ?? 4));
+        const db = Math.max(1, Math.min(16, p.dataBits ?? 4));
+        const size = 1 << ab;
+        const mem = p.memoryData ?? [];
+        const addrVal = readPinFn(gate.id, 'addr', ab);
+        const addr = toUnsignedInt(addrVal);
+        const oeRaw = readPinFn(gate.id, 'oe', 1).bits[0];
+        const oe = oeRaw === BIT_Z ? BIT_1 : oeRaw;
+        if (oe === BIT_0) {
+          drivePinFn(gate.id, 'dout', makeUniform(BIT_Z, db));
+        } else if (oe !== BIT_1 || addr === null) {
+          drivePinFn(gate.id, 'dout', makeUniform(BIT_X, db));
+        } else {
+          drivePinFn(gate.id, 'dout', fromInt(mem[addr % size] ?? 0, db));
+        }
+        break;
+      }
+
+      case 'SUBCIRCUIT': {
+        const subId = p.subcircuitId;
+        const subDoc = subId ? project.circuits[subId] : undefined;
+        if (!subDoc || depth >= MAX_DEPTH) break;
+        if (subDoc.isStub) {
+          // Unimplemented HDL external module stub outputs X (cause: 'stub') on output pins
+          const pins = graph.gatePins.get(gate.id) ?? [];
+          for (const pin of pins) {
+            if (pin.dir === 'out') {
+              drivePinFn(gate.id, pin.id, makeUniform(BIT_X, pin.bitWidth));
+              const nid = graph.pinToNet.get(pinKey(gate.id, pin.id));
+              if (nid) netStubDriven.add(nid);
+            }
+          }
+          break;
+        }
+
+        if (!seqState.subStates[gate.id]) {
+          seqState.subStates[gate.id] = createEmptySequentialState();
+        }
+        const subSeq = seqState.subStates[gate.id];
+        const extInputs: Record<string, LogicValue> = {};
+        const pins = graph.gatePins.get(gate.id) ?? [];
+        for (const pin of pins) {
+          if (pin.dir === 'in') {
+            extInputs[pin.id] = readPinFn(gate.id, pin.id, pin.bitWidth);
+          }
+        }
+
+        const subComp = subCompiled[subId!] ?? compileCircuit(subDoc, project);
+        const snap = simulateCompiledCircuit(subComp, project, subSeq, {
+          externalInputs: extInputs,
+          depth: depth + 1,
+          commitSequential: false, // commit subcircuit sequential once parent stabilizes
+          skipUnknownLoopProbe: !recordSideEffects,
+        });
+        if (recordSideEffects) subSnapshots[gate.id] = snap;
+
+        // Read MODULE_OUT pins from subcircuit snapshot
+        for (const pin of pins) {
+          if (pin.dir === 'out') {
+            const childPinKey = pinKey(pin.id, 'in');
+            const outVal = snap.pinValues[childPinKey] ?? makeUniform(BIT_Z, pin.bitWidth);
+            drivePinFn(gate.id, pin.id, resizeValue(outVal, pin.bitWidth, BIT_Z));
+            if (snap.pinXCauses?.[childPinKey] === 'oscillation') {
+              const nid = graph.pinToNet.get(pinKey(gate.id, pin.id));
+              if (nid) netOscSubDriven.add(nid);
+            }
+          }
+        }
+        break;
+      }
+    }
+  };
+
+  // Combinational fixed-point loop
+  for (let iter = 0; iter < MAX_DELTA_ITERATIONS; iter++) {
+    iterations = iter + 1;
+    const netDrivers = new Map<string, LogicValue[]>();
+    const netStubDriven = new Set<string>();
+    const netOscSubDriven = new Set<string>();
+
+    const drivePin = (gateId: string, pinId: string, val: LogicValue) => {
+      const netId = graph.pinToNet.get(pinKey(gateId, pinId));
+      if (!netId) return;
+      let list = netDrivers.get(netId);
+      if (!list) {
+        list = [];
+        netDrivers.set(netId, list);
+      }
+      list.push(val);
+    };
+
+    for (const gate of circuit.gates) {
+      evaluateGate(gate, readPin, drivePin, true, netStubDriven, netOscSubDriven);
+    }
+
+    // Resolve all nets from collected drivers & classify X causes
+    let changed = false;
+    const changedNets = new Set<string>();
+    lastNetDriverCounts = new Map<string, number>();
+    for (const [netId, w] of graph.netWidth.entries()) {
+      const drivers = netDrivers.get(netId) ?? [];
+      lastNetDriverCounts.set(netId, drivers.length);
+      const nextVal = resolveValues(drivers, w);
+      const prevVal = netValues.get(netId);
+      if (!valuesEqual(prevVal, nextVal)) {
+        netValues.set(netId, nextVal);
+        changedNets.add(netId);
+        changed = true;
+      }
+      if (nextVal.bits.includes(BIT_X)) {
+        if (hasBusContention(drivers, w)) {
+          netXCauses.set(netId, 'conflict');
+        } else if (netOscSubDriven.has(netId)) {
+          netXCauses.set(netId, 'oscillation');
+        } else if (netStubDriven.has(netId)) {
+          netXCauses.set(netId, 'stub');
+        } else {
+          netXCauses.set(netId, 'unknown');
+        }
+      } else {
+        netXCauses.delete(netId);
+      }
+    }
+
+    if (!changed) break;
+    if (iter === MAX_DELTA_ITERATIONS - 1) {
+      oscillating = true;
+      // Mark every net still toggling on the final delta cycle as X ('oscillation') so UI flags instability
+      for (const netId of changedNets) {
+        const w = graph.netWidth.get(netId) ?? 1;
+        netValues.set(netId, makeUniform(BIT_X, w));
+        netXCauses.set(netId, 'oscillation');
+      }
+    }
+  }
+
+  // Propagated-X feedback loop reset probe:
+  // Strict 4-state evaluation traps combinational gate loops in X even when their logic value is uniquely
+  // determined (e.g., y = y ^ y, y = y & ~y, MUX loops) or genuinely oscillating (e.g., 1/3-NOT ring).
+  // Attempt resetting 'unknown'-X bits to 0 and to 1 via Gauss-Seidel relaxation (read-only on seqState):
+  //   - Both 0-reset & 1-reset converge to the exact same concrete bit -> adopt that uniquely determined bit!
+  //   - Either probe keeps toggling -> true combinational oscillation -> mark XCause = 'oscillation'!
+  //   - Both converge to different concrete bits -> bistable latch (stays X until pulsed, or breaks symmetry on manual reset).
+  if (!oscillating && !options.skipUnknownLoopProbe) {
+    const unknownNets: string[] = [];
+    for (const [netId, cause] of netXCauses.entries()) {
+      if (cause === 'unknown' && netValues.get(netId)?.bits.includes(BIT_X)) {
+        unknownNets.push(netId);
+      }
+    }
+
+    if (unknownNets.length > 0) {
+      const singleDriverNets = new Set<string>();
+      for (const [netId, count] of lastNetDriverCounts.entries()) {
+        if (count === 1) singleDriverNets.add(netId);
+      }
+
+      const runGaussSeidelProbe = (seedBit: Bit) => {
+        const pVals = new Map<string, LogicValue>();
+        for (const [netId, val] of netValues.entries()) {
+          if (netXCauses.get(netId) === 'unknown' && val.bits.includes(BIT_X)) {
+            pVals.set(netId, {
+              width: val.width,
+              bits: val.bits.map((b) => (b === BIT_X ? seedBit : b)),
+            });
+          } else {
+            pVals.set(netId, val);
+          }
+        }
+
+        const pReadPin = makeReadPin(pVals);
+        let converged = false;
+        const togglingNets = new Set<string>();
+
+        for (let pass = 0; pass < MAX_PROBE_ITERATIONS; pass++) {
+          let changed = false;
+          const passChanged = new Set<string>();
+          const multiDrivers = new Map<string, LogicValue[]>();
+          const dummyStub = new Set<string>();
+          const dummyOsc = new Set<string>();
+
+          const pDrivePin = (gateId: string, pinId: string, val: LogicValue) => {
+            const netId = graph.pinToNet.get(pinKey(gateId, pinId));
+            if (!netId) return;
+            if (singleDriverNets.has(netId)) {
+              const w = graph.netWidth.get(netId) ?? val.width;
+              const nextVal = resizeValue(val, w, BIT_Z);
+              const prevVal = pVals.get(netId);
+              if (!valuesEqual(prevVal, nextVal)) {
+                pVals.set(netId, nextVal);
+                passChanged.add(netId);
+                changed = true;
+              }
+            } else {
+              let list = multiDrivers.get(netId);
+              if (!list) {
+                list = [];
+                multiDrivers.set(netId, list);
+              }
+              list.push(val);
+            }
+          };
+
+          for (const gate of circuit.gates) {
+            evaluateGate(gate, pReadPin, pDrivePin, false, dummyStub, dummyOsc);
+          }
+
+          // Resolve any multi-driver or 0-driver nets at the end of the Gauss-Seidel pass
+          for (const [netId, w] of graph.netWidth.entries()) {
+            if (singleDriverNets.has(netId)) continue;
+            const drivers = multiDrivers.get(netId) ?? [];
+            const nextVal = resolveValues(drivers, w);
+            const prevVal = pVals.get(netId);
+            if (!valuesEqual(prevVal, nextVal)) {
+              pVals.set(netId, nextVal);
+              passChanged.add(netId);
+              changed = true;
+            }
+          }
+
+          if (!changed) {
+            converged = true;
+            togglingNets.clear();
+            break;
+          }
+          if (pass >= MAX_PROBE_ITERATIONS - 4) {
+            for (const nid of passChanged) togglingNets.add(nid);
+          }
+        }
+
+        return { values: pVals, converged, togglingNets };
+      };
+
+      const probe0 = runGaussSeidelProbe(BIT_0);
+      const probe1 = runGaussSeidelProbe(BIT_1);
+      const allowBistableReset = Boolean(seqState.resetUnknownLoops && commitSequential);
+      let anyResolved = false;
+
+      for (const netId of unknownNets) {
+        if (probe0.togglingNets.has(netId) || probe1.togglingNets.has(netId)) {
+          oscillating = true;
+          netXCauses.set(netId, 'oscillation');
+          continue;
+        }
+        const cur = netValues.get(netId);
+        const v0 = probe0.values.get(netId);
+        const v1 = probe1.values.get(netId);
+        if (!cur || !v0 || !v1) continue;
+
+        let changedBits = false;
+        const nextBits = cur.bits.slice();
+        for (let b = 0; b < cur.width; b++) {
+          if (cur.bits[b] !== BIT_X) continue;
+          const b0 = v0.bits[b];
+          const b1 = v1.bits[b];
+          if (b0 === b1 && (b0 === BIT_0 || b0 === BIT_1)) {
+            nextBits[b] = b0;
+            changedBits = true;
+          } else if (
+            allowBistableReset &&
+            probe0.converged &&
+            probe1.converged &&
+            (b0 === BIT_0 || b0 === BIT_1)
+          ) {
+            nextBits[b] = b0;
+            changedBits = true;
+          }
+        }
+        if (changedBits) {
+          const nextVal: LogicValue = { width: cur.width, bits: nextBits };
+          netValues.set(netId, nextVal);
+          anyResolved = true;
+          if (!nextBits.includes(BIT_X)) {
+            netXCauses.delete(netId);
+          }
+        }
+      }
+
+      // Refresh gateInternalValues / pendingNextReg / subSnapshots once with the newly resolved net values
+      if (anyResolved && !oscillating) {
+        const netStubDriven = new Set<string>();
+        const netOscSubDriven = new Set<string>();
+        const noopDrive = () => {};
+        for (const gate of circuit.gates) {
+          evaluateGate(gate, readPin, noopDrive, true, netStubDriven, netOscSubDriven);
+        }
+      }
+    }
+  }
+
+  if (commitSequential && seqState.resetUnknownLoops) {
+    seqState.resetUnknownLoops = false;
+  }
+
+  // Persist settled net values so gate-level feedback latches (cross-coupled NOR/NAND, etc.) hold state
+  if (
+    !oscillating &&
+    !options.skipUnknownLoopProbe &&
+    (commitSequential || options.persistNetValues)
+  ) {
+    if (!seqState.prevNetValues) seqState.prevNetValues = {};
+    for (const [netId, sig] of graph.netSig.entries()) {
+      const val = netValues.get(netId);
+      if (!val || val.bits.every((b) => b === BIT_Z)) {
+        delete seqState.prevNetValues[sig];
+      } else {
+        seqState.prevNetValues[sig] = val;
+      }
+    }
+  }
+
+  // Commit sequential state transitions after combinational network settles
+  if (commitSequential) {
+    let anySequentialChanged = false;
+    for (const [gateId, nextVal] of pendingNextReg.entries()) {
+      if (!valuesEqual(seqState.registers[gateId], nextVal)) {
+        seqState.registers[gateId] = nextVal;
+        anySequentialChanged = true;
+      }
+    }
+    for (const w of pendingRamWrites) {
+      const mem = seqState.ramData[w.gateId] ?? new Array<number>(w.size).fill(0);
+      if (mem[w.addr] !== w.data) {
+        mem[w.addr] = w.data;
+        seqState.ramData[w.gateId] = mem;
+        anySequentialChanged = true;
+      }
+    }
+    // Update prevClock for all clocked elements
+    for (const gate of circuit.gates) {
+      if (
+        gate.type === 'D_FF' ||
+        gate.type === 'JK_FF' ||
+        gate.type === 'T_FF' ||
+        gate.type === 'REGISTER' ||
+        gate.type === 'COUNTER' ||
+        gate.type === 'RAM'
+      ) {
+        const clk = readPin(gate.id, 'clk', 1).bits[0];
+        seqState.prevClock[gate.id] = clk;
+      }
+      // Also commit subcircuits once and detect whether any subcircuit output changed!
+      if (gate.type === 'SUBCIRCUIT' && gate.props.subcircuitId && depth < MAX_DEPTH) {
+        const subDoc = project.circuits[gate.props.subcircuitId];
+        if (subDoc && !subDoc.isStub) {
+          const prevSubSnap = subSnapshots[gate.id];
+          const subSeq = seqState.subStates[gate.id] ?? createEmptySequentialState();
+          seqState.subStates[gate.id] = subSeq;
+          const extInputs: Record<string, LogicValue> = {};
+          const pins = graph.gatePins.get(gate.id) ?? [];
+          for (const pin of pins) {
+            if (pin.dir === 'in') {
+              extInputs[pin.id] = readPin(gate.id, pin.id, pin.bitWidth);
+            }
+          }
+          const subComp = subCompiled[gate.props.subcircuitId] ?? compileCircuit(subDoc, project);
+          const nextSubSnap = simulateCompiledCircuit(subComp, project, subSeq, {
+            externalInputs: extInputs,
+            depth: depth + 1,
+            commitSequential: true,
+          });
+          subSnapshots[gate.id] = nextSubSnap;
+
+          for (const pin of pins) {
+            if (pin.dir === 'out') {
+              const prevOut = prevSubSnap?.pinValues[pinKey(pin.id, 'in')];
+              const nextOut = nextSubSnap.pinValues[pinKey(pin.id, 'in')];
+              if (!valuesEqual(prevOut, nextOut)) {
+                anySequentialChanged = true;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Re-evaluate combinational outputs once if a FF/Register/RAM updated so Q is immediately visible!
+    if (anySequentialChanged) {
+      return simulateCompiledCircuit(compiled, project, seqState, {
+        ...options,
+        commitSequential: false,
+        persistNetValues: true,
+      });
+    }
+  }
+
+  // Assemble final snapshot (including X root causes for cause-aware UI coloring)
+  const pinValues: Record<string, LogicValue> = {};
+  const pinXCauses: Record<string, XCause> = {};
+  for (const [pKey, netId] of graph.pinToNet.entries()) {
+    const val = netValues.get(netId);
+    if (val) pinValues[pKey] = val;
+    const xc = netXCauses.get(netId);
+    if (xc) pinXCauses[pKey] = xc;
+  }
+
+  const wireValues: Record<string, LogicValue> = {};
+  const wireXCauses: Record<string, XCause> = {};
+  for (const [wireId, netId] of graph.wireToNet.entries()) {
+    const val = netValues.get(netId);
+    if (val) wireValues[wireId] = val;
+    const xc = netXCauses.get(netId);
+    if (xc) wireXCauses[wireId] = xc;
+  }
+
+  const namedNetValues: Record<string, LogicValue> = {};
+  for (const [name, netId] of graph.netLabelToNet.entries()) {
+    const val = netValues.get(netId);
+    if (val) namedNetValues[name] = val;
+  }
+
+  const ramCopy: Record<string, number[]> = {};
+  for (const [gid, arr] of Object.entries(seqState.ramData)) {
+    ramCopy[gid] = arr.slice();
+  }
+
+  return {
+    pinValues,
+    wireValues,
+    netValues: namedNetValues,
+    pinXCauses,
+    wireXCauses,
+    gateInternalValues,
+    ramData: ramCopy,
+    subSnapshots,
+    iterations,
+    oscillating,
+  };
+}
