@@ -1,3 +1,13 @@
+---
+type: specification
+title: LogicFlow 機能仕様書
+description: 基本操作、4値信号カラー定義、実行モード、搭載コンポーネント一覧、HDL 連携、ショートカット仕様
+tags: [specification, features, components, hdl, shortcuts]
+generated:
+  by: agent/antigravity
+  at: 2026-11-27T15:08:00+09:00
+---
+
 # LogicFlow 機能仕様書
 
 ## 1. 基本操作 & UX

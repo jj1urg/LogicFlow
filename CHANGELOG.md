@@ -1,20 +1,27 @@
-# 作業履歴 (Changelog)
+# Changelog
 
-## バージョン管理ルール (`vx.y-rz.w`)
+本プロジェクトのバージョン管理ルール（`vx.y-rz.w`）および Jujutsu (`jj`) 運用方針の詳細は [`docs/versioning.md`](./docs/versioning.md) を参照してください。
 
-本プロジェクトでは、**`v` = version（外部仕様・機能バージョン `x.y`）** と **`r` = revision（内部実装・品質リビジョン `z.w`）** の 4 つのステータスを用いた独自バージョニング形式 **`vx.y-rz.w`** を採用しています。
-
-| 部 / 桁           | 意味                        | 繰り上げの目安                                                                     |
-| ----------------- | --------------------------- | ---------------------------------------------------------------------------------- |
-| `v` (`x.y`) — `x` | 破壊的変更 (`1` 以上で適用) | `0` は初期開発フェーズ。`1` 以上で保存形式・API・操作体系の破壊的変更時に加算      |
-| `v` (`x.y`) — `y` | 機能追加 (Feature)          | 新規コンポーネント・UI/UX 機能・インポート/エクスポート機能などの追加時に加算      |
-| `r` (`z.w`) — `z` | 内部ロジック刷新・修正      | エンジン最適化・アルゴリズム刷新・ツールチェーン移行・バグ修正・テスト拡充時に加算 |
-| `r` (`z.w`) — `w` | 非ロジック更新              | フォーマット整形・スタイル微調整・ドキュメント/管理ルール更新など挙動不変時に加算  |
-
-> ※ 上位の桁が上がった場合、下位の桁は `0` にリセットします（例: `v0.5-r1.0` → 機能追加 → `v0.6-r0.0`）。
-> ※ `package.json` の `version` は npm の仕様上 SemVer 互換表記 (`x.y.0-rz.w`) を併記しています。
+> 概要: **`v` = version (`x.y`: 破壊的変更 / 機能追加)**、**`r` = revision (`z.w`: ロジック刷新・修正 / 非ロジック更新)**。上位桁が上がると下位桁は `0` にリセットし、`package.json` には SemVer 互換の `x.y.0-rz.w` を同期します。
 
 ---
+
+## 2026-11-27 — v0.14-r0.1 公開準備・OKF 導入・開発管理ドキュメント整備
+
+### 実施内容
+
+1. **GitHub Public 公開向けルートファイルの整備** (`README.md`, `LICENSE`, `CHANGELOG.md`, `AGENTS.md`):
+   - 操作方法・主要機能・アーキテクチャ・クイックスタートをまとめた `README.md` を新設。
+   - `LICENSE`（MIT License / Copyright (c) 2026 JJ1URG）を追加。
+   - `docs/changelog.md` をルート `CHANGELOG.md` へ移行し、重複していた履歴エントリ（`v0.12-r1.0`, `v0.8-r0.0`）を整理。
+   - AI エージェント向け共通ルール `AGENTS.md` を新設し、OKF ナレッジ参照手順・人間専用ファイル（`docs/main.md`, `docs/memo.md`）の保護ルール・バージョン管理方針を明示。
+2. **`docs/` の Open Knowledge Format (OKF) 化** (`docs/index.md`, `docs/versioning.md`, `docs/architecture.md`, `docs/features.md`, `docs/assets/.gitkeep`):
+   - `docs/index.md` をナレッジ全体の目次として新設。
+   - `docs/versioning.md` を新設し、独自バージョニング `vx.y-rz.w` と `package.json` (SemVer 互換)、コミットメッセージ規約（`:絵文字: prefix: abstract`）、および `jj` (Jujutsu) 運用方針を整理。
+   - `docs/architecture.md`・`docs/features.md` へ OKF 準拠の YAML フロントマターを付与し、構成図を最新化。
+3. **リポジトリ設定の整理** (`.gitignore`, `vite.config.ts`, `package.json`):
+   - `vite.config.ts` の `fmt.ignorePatterns` で人間専用ファイル（`docs/main.md`, `docs/memo.md`）および `docs/test_hdl` をフォーマッタ除外対象として確認・維持。
+   - `tsconfig.tsbuildinfo` を `.gitignore` に追加し、バージョン管理対象から除外。
 
 ## 2026-11-26 — v0.14-r0.0 基本ゲート帰還ループの不定値解消・状態保持 & フローティング配線の再延長対応
 
@@ -53,23 +60,8 @@
 
 ### 実施内容
 
-1. _*A* 自動配線の大幅高速化（Binary Min-Heap + TypedArray 化）_* (`src/core/routing.ts`):
-   - A* 探索のオープンリストを線形走査＋`Array.splice` ($O(N^2)$) から **Binary Min-Heap** ($O(N \log N)$) へ刷新し、内側ループの文字列キー生成・`Map`/`Set` ルックアップを **フラットな `Uint8Array` / `Float64Array` / `Int32Array`** へ置換（配線ロジック・経路品質はそのまま維持）。
-2. **リアルタイム実行時の拡大縮小・パン・ドラッグ描画の高速化** (`src/canvas/renderer.ts`, `src/components/CircuitCanvas.tsx`, `src/store/useProjectStore.ts`):
-   - 毎フレーム再計算していた `findOrthogonalCrossings` / `findWireJunctions` / サブ回路バウンディングボックスを `WeakMap` キャッシュ化（ネスト内部回路では T 字ドット探索を省略）。
-   - 全 HIGH/X ワイヤーに対して毎フレーム走っていたソフトウェアガウスぼかし (`ctx.shadowBlur`) を軽量な半透明ハローパスへ置換。
-   - 背景グリッドドットを最大数万回の個別 `fillRect` ループから **単一 `CanvasPattern` 描画** へ最適化。
-   - ビューポート外パーツのカリング、ネスト小サイズ時の直線ワイヤー＆LOD 簡易表示、`requestAnimationFrame` によるズーム/パン統合、ドラッグ時のスナップ座標変化なしスキップ、および `localStorage` 保存の 400ms デバウンスを導入。
-3. **トップモジュール自動推論の改善** (`src/core/hdl.ts`, `src/components/Modals.tsx`):
-   - 未インスタンス化モジュールが複数存在する場合（例: `td4_cpu` と未使用リーフ `rom_16x8`）、単純な先頭／ファイル名順ではなく **再帰的な配下インスタンス数（階層規模）スコア** で最も上位のモジュールを自動選出するよう改善（インポート画面のドロップダウンにも `自動判定（推定: td4_cpu）` を事前表示）。
-4. **実測ベンチマークテスト追加** (`tests/hdl_advanced.test.ts`): `docs/test_hdl` の実 TD4 CPU（7 ファイル）を用いたトップ推論・自動配線・再配線速度テストを追加（合計 9 ファイル 69 テスト）。
-
-## 2026-11-26 — v0.12-r1.0 自動配線・リアルタイム拡大縮小の大幅高速化 & トップモジュール自動推論の改善
-
-### 実施内容
-
-1. _*A* 自動配線の大幅高速化（Binary Min-Heap + TypedArray 化）_* (`src/core/routing.ts`):
-   - A* 探索のオープンリストを線形走査＋`Array.splice` ($O(N^2)$) から **Binary Min-Heap** ($O(N \log N)$) へ刷新し、内側ループの文字列キー生成・`Map`/`Set` ルックアップを **フラットな `Uint8Array` / `Float64Array` / `Int32Array`** へ置換（配線ロジック・経路品質はそのまま維持）。
+1. **A* 自動配線の大幅高速化（Binary Min-Heap + TypedArray 化）** (`src/core/routing.ts`):
+   - A* 探索のオープンリストを線形走査＋`Array.splice` (`O(N^2)`) から **Binary Min-Heap** (`O(N log N)`) へ刷新し、内側ループの文字列キー生成・`Map`/`Set` ルックアップを **フラットな `Uint8Array` / `Float64Array` / `Int32Array`** へ置換（配線ロジック・経路品質はそのまま維持）。
 2. **リアルタイム実行時の拡大縮小・パン・ドラッグ描画の高速化** (`src/canvas/renderer.ts`, `src/components/CircuitCanvas.tsx`, `src/store/useProjectStore.ts`):
    - 毎フレーム再計算していた `findOrthogonalCrossings` / `findWireJunctions` / サブ回路バウンディングボックスを `WeakMap` キャッシュ化（ネスト内部回路では T 字ドット探索を省略）。
    - 全 HIGH/X ワイヤーに対して毎フレーム走っていたソフトウェアガウスぼかし (`ctx.shadowBlur`) を軽量な半透明ハローパスへ置換。
@@ -137,24 +129,6 @@
 3. **複数箇所からのワンクリック表示** (`src/components/TopBar.tsx`, `src/components/InspectorPanel.tsx`, `src/components/ContextMenu.tsx`, `src/App.tsx`):
    - 上部タブバーの **「HDLソース」** ボタン、インスペクタ（回路未選択時・`SUBCIRCUIT` 選択時）、右クリックメニュー（モジュール上・キャンバス背景上）からいつでも元の HDL ソースを表示可能（実行モード・編集ロック中でも閲覧可能）。
 4. **テスト追加** (`tests/hdl_advanced.test.ts`): コメント・非合成文・複数モジュール・単一モジュールそれぞれの原文保持テストを追加（全 9 ファイル 63 テスト）。
-
-## 2026-11-26 — v0.8-r0.0 配線ブリッジ重複バグ修正・HDL assign 接続修復・マルチ入力 MUX 対応・MODULE_OUT 形状刷新
-
-### 実施内容
-
-1. **交差ブリッジと直線の二重描画バグ修正 & 縦方向ワイヤー重なりの抑制** (`src/core/routing.ts`, `src/canvas/renderer.ts`, `src/core/hdl.ts`):
-   - `findOrthogonalCrossings` で同一または近接 X 座標（12px 未満）の縦ワイヤー交差を重複排除し、`traceRoundedWirePath` にも `lastDrawnEnd` ガードを追加することで、複数ワイヤーが横ワイヤーを横切ってもブリッジ弧と直線が二重描画されないよう修正。
-   - A* 経路探索の既存セグメント重複ペナルティを大幅強化（`+85` / 展開上限 `4500`）し、フォールバック経路でも空き縦トラックを探索する `findFreeChannelX` を導入。さらに HDL 自動レイアウトの列間チャネル幅を交差本数に応じて動的拡張。
-2. **HDL `assign` 接続切れバグの包括修正** (`src/core/hdl.ts`):
-   - `netPinMap` を複数ドライバ対応 (`drivers: PinRef[]`) に刷新し、複数トライステートバス駆動 (`assign bus = en ? d : 1'bz;`) で先のドライバが上書き消失する不具合を修正。
-   - 右辺ビット選択/スライス (`a[0]`, `a[3:2]`)・左辺ビット/スライス代入 (`assign y[0] = ...`)・右辺/左辺連結＆複製 (`{a, b}`, `{4{a}}`, `assign {hi, lo} = bus`) を `SPLITTER`（分割/結合）へ自動合成。
-   - カンマ区切り複数代入 (`assign #5 a = x, b = y;`)・ディレイ/ドライブ強度・宣言順に依存しないネット間エイリアス解決・減算 (`-`)・`<=` / `>=` / `===` / `!==`・単項リダクション (`&a`, `|a`, `^a`)・`localparam` 定数参照に対応。
-3. **可変マルチ入力 `MUX` / `DEMUX`（2〜16 チャネル）& HDL マルチ入力 MUX 合成** (`src/core/catalog.ts`, `src/core/simulator.ts`, `src/components/InspectorPanel.tsx`, `src/core/hdl.ts`):
-   - `MUX` / `DEMUX` に「入力（出力）チャネル数 (2〜16)」設定を追加し、選択ビット幅 `ceil(log2(channels))` を自動連動（範囲外選択時は `X` を出力）。
-   - HDL の `case (sel)` / `if-else if` / 連鎖三項演算子 `(sel == k) ? ...` を 2:1 MUX＋比較器チェーンではなく **単一のマルチ入力 `MUX` コンポーネント** へ直接論理合成（Verilog エクスポート＆再インポートのラウンドトリップ対応）。
-4. **`MODULE_OUT` シンボル形状を `MODULE_IN` と同一向きに変更** (`src/canvas/renderer.ts`):
-   - `MODULE_OUT` の線対称反転を廃止し、`MODULE_IN` と同じ右向き五角形タグ形状で描画した上で、頂点側ではなく反対の左辺中点にピンが接続される表現へ変更。
-5. **テスト拡充** (`tests/catalog_routing_hittest.test.ts`, `tests/hdl_advanced.test.ts`): 重複交差デデュープ・4 本並列配線重なりゼロ・可変マルチ入力 MUX・`assign` 各種接続・マルチ入力 MUX 合成＆往復テストを追加（合計 9 ファイル 62 テスト）。
 
 ## 2026-11-26 — v0.8-r0.0 配線ブリッジ重複バグ修正・HDL assign 接続修復・マルチ入力 MUX 対応・MODULE_OUT 形状刷新
 
@@ -297,14 +271,14 @@
 
 ### 実施内容
 
-1. **配線の角丸（フィレット）描画** (`src/canvas/renderer.ts`)
+1. **配線の角丸（フィレット）描画** (`src/canvas/renderer.ts`):
    - `traceRoundedWirePath()` を実装し、すべてのワイヤー（通常配線・選択ハイライト・配線プレビュー・モジュール内部のライブ配線）の折れ曲がり角を滑らかな角丸で描画。
    - 非接続交差のブリッジ円弧と角丸が干渉しないようセグメント端のトリム半径を自動クランプ。
-2. **配線のドラッグ手動調整 & 自動再レイアウト連携** (`src/core/routing.ts`, `src/canvas/hitTest.ts`, `src/components/CircuitCanvas.tsx`)
+2. **配線のドラッグ手動調整 & 自動再レイアウト連携** (`src/core/routing.ts`, `src/canvas/hitTest.ts`, `src/components/CircuitCanvas.tsx`):
    - ワイヤーの水平/垂直線分をそのままドラッグして上下・左右にスライド調整可能に（端点ピンに接続する線分をドラッグした場合も自動で直交スタブを挿入してピン接続を維持）。
    - 選択中ワイヤーに角ハンドルと線分中点ハンドルを表示し、カーソル形状も `ns-resize` / `ew-resize` / `move` に動的に切替。
    - 手動調整後に接続先コンポーネントを移動した場合は、従来どおり `rerouteWiresForGates()` により自動で綺麗に再レイアウト。右クリックメニュー・インスペクタから単一ワイヤーの手動再レイアウト実行も可能に。
-3. **テスト・ドキュメント更新**
+3. **テスト・ドキュメント更新**:
    - `tests/engine.test.ts` に手動線分ドラッグ・角ドラッグ・パーツ移動後自動再レイアウトのテストを追加。
    - `docs/features.md`, `docs/architecture.md`, `docs/changelog.md` を更新。
 
@@ -312,21 +286,21 @@
 
 ### 実施内容
 
-1. **プロジェクト基盤構築**
+1. **プロジェクト基盤構築**:
    - Vite + React 19 + TypeScript + HTML5 Canvas 2D + Vitest の構成をセットアップ。
    - Cloudflare Workers Static Assets デプロイ設定 (`wrangler.jsonc`) を追加。
-2. **4値論理シミュレーションエンジン (`src/core/`)**
+2. **4値論理シミュレーションエンジン (`src/core/`)**:
    - `logic4.ts`: IEEE 1364 準拠の 4 値信号 (`0`, `1`, `X`, `Z`)、マルチビット演算、マルチドライバ衝突解決 (`0`+`1`→`X`, 浮遊→`Z`) を実装。
    - `catalog.ts`: I/O、基本ゲート、組み合わせ回路 (MUX/DEMUX/DEC/HA/FA/ADD/CMP)、順序回路 (SR/Dラッチ、D/JK/T-FF、レジスタ、カウンタ)、RAM/ROM、トンネル、スプリッタ、SV 風 `IFACE_BUNDLE`、カスタムモジュールを定義。
    - `simulator.ts`: デルタサイクル収束・発振保護・階層サブ回路の独立状態管理・ライブスナップショット取得を実装。
-3. **配線ルータ & HDL 連携 (`src/core/routing.ts`, `src/core/hdl.ts`)**
+3. **配線ルータ & HDL 連携 (`src/core/routing.ts`, `src/core/hdl.ts`)**:
    - グリッドフィット用の障害物・重なり回避 A* 直交ルータおよび自由配線モードを実装。
    - 非接続交差のブリッジ円弧描画、T 字接続のハンダ点検出を実装。
    - Verilog / SystemVerilog インポータ（未定義外部モジュールの仮 Stub 自動生成付き）および Verilog / JSON / DOT ネットリストエクスポータを実装。
-4. **モダン GUI エディタ (`src/canvas/`, `src/components/`, `src/store/`)**
+4. **モダン GUI エディタ (`src/canvas/`, `src/components/`, `src/store/`)**:
    - リアルタイム 4 値発光キャンバス描画、Digital 風モジュール内部表示（箱 / 中身のみ / 中身＋リアルタイム色）を実装。
    - 編集/実行分離モード、Undo/Redo、コピー/ペースト/複製、右クリックコンテキストメニュー、シンボル定義エディタ、RAM/ROM HEX エディタ、`.lcirc.json` 保存/読込および外部モジュール読込を実装。
    - 初期体験用の 3 タブ構成サンプルプロジェクト（`2bit_Adder_Live`, `FullAdder`, `4State_Bus_RAM`）を同梱。
-5. **ドキュメント・テスト整備**
+5. **ドキュメント・テスト整備**:
    - `docs/architecture.md`, `docs/features.md`, `docs/changelog.md` を作成。
    - `tests/engine.test.ts` に 4 値論理・階層シミュレーション・Tri-state バス・カウンタ/ROM・SV Interface・A* ルーティング・Verilog Import/Export の自動テストを追加。

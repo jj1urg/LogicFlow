@@ -19,6 +19,6 @@ export default defineConfig({
     singleQuote: true,
     semi: true,
     printWidth: 100,
-    ignorePatterns: ['docs/main.md'],
+    ignorePatterns: ['docs/main.md', 'docs/memo.md', 'docs/test_hdl'],
   },
 });

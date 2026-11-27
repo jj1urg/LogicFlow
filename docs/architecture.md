@@ -1,3 +1,13 @@
+---
+type: architecture
+title: LogicFlow アーキテクチャ設計書
+description: 技術選定、ディレクトリ構成、4 値論理シミュレーションエンジン、A* ルータ、Cloudflare Workers デプロイ構成
+tags: [architecture, simulator, routing, canvas, hdl, cloudflare-workers]
+generated:
+  by: agent/antigravity
+  at: 2026-11-27T15:08:00+09:00
+---
+
 # LogicFlow アーキテクチャ設計書
 
 ## 1. 技術選定と構成方針
@@ -15,39 +25,48 @@
 ## 2. ディレクトリ構成
 
 ```text
-logic_circuit/
-├── docs/
-│   ├── main.md             # 初期要件定義書
-│   ├── architecture.md     # 本ドキュメント（アーキテクチャ設計）
-│   ├── features.md         # 機能仕様・コンポーネント一覧・ショートカット
-│   └── changelog.md        # 作業履歴
+LogicFlow/
+├── README.md                   # 公開用トップページ・操作概要
+├── CHANGELOG.md                # 変更履歴（vx.y-rz.w）
+├── LICENSE                     # MIT License
+├── AGENTS.md                   # AI エージェント向け開発ガイドライン
+├── docs/                       # Open Knowledge Format (OKF) ナレッジバンドル
+│   ├── index.md                # OKF 目次（エントリポイント）
+│   ├── architecture.md         # 本ドキュメント（アーキテクチャ設計）
+│   ├── features.md             # 機能仕様・コンポーネント一覧・ショートカット
+│   ├── versioning.md           # バージョン管理 (vx.y-rz.w) & jj 運用ルール
+│   ├── main.md                 # [人間専用] 初期要件定義書
+│   ├── memo.md                 # [人間専用] 人間のメモ・改善案
+│   ├── assets/                 # スクリーンショット等の画像アセット
+│   └── test_hdl/               # テスト用 SystemVerilog サンプル（TD4 CPU 等）
 ├── src/
-│   ├── core/               # DOM 非依存の純粋ロジック層（将来 WASM 置換対象）
-│   │   ├── logic4.ts       # IEEE 1364 準拠の 4値論理演算 (0, 1, X, Z) & バス解決
-│   │   ├── types.ts        # プロジェクト・回路・ゲート・ワイヤー・スナップショット型定義
-│   │   ├── catalog.ts      # 全コンポーネント定義・動的ピン配置・バウンディング計算
-│   │   ├── simulator.ts    # 階層対応 4値論理シミュレータ (順序回路状態分離)
-│   │   ├── routing.ts      # 障害物・ワイヤー重なり回避 A* 直交ルータ & 自由配線
-│   │   ├── hdl.ts          # Verilog/SystemVerilog インポータ (Stub 生成) & ネットリスト出力
-│   │   └── samples.ts      # 初期サンプルプロジェクト（2bit加算器 / 4値バス / カウンタ）
-│   ├── canvas/             # Canvas 2D 描画・ヒットテスト層
-│   │   ├── hitTest.ts      # ワールド座標変換、ピン/ゲート/ワイヤー/矩形ヒット判定
-│   │   └── renderer.ts     # 4値発光ワイヤー、ゲート記号、Digital風モジュール内部ライブ描画
+│   ├── core/                   # DOM 非依存の純粋ロジック層（将来 WASM 置換対象）
+│   │   ├── logic4.ts           # IEEE 1364 準拠の 4値論理演算 (0, 1, X, Z) & バス解決
+│   │   ├── types.ts            # プロジェクト・回路・ゲート・ワイヤー・スナップショット型定義
+│   │   ├── catalog.ts          # 全コンポーネント定義・動的ピン配置・バウンディング計算
+│   │   ├── simulator.ts        # 階層対応 4値論理シミュレータ (順序回路状態分離・事前コンパイル)
+│   │   ├── routing.ts          # 障害物・ワイヤー重なり回避 A* 直交ルータ & 自由配線
+│   │   ├── hdl.ts              # Verilog/SystemVerilog インポータ (Stub 生成) & ネットリスト出力
+│   │   └── samples.ts          # 初期サンプルプロジェクト（2bit加算器 / 4値バス / カウンタ）
+│   ├── canvas/                 # Canvas 2D 描画・ヒットテスト層
+│   │   ├── hitTest.ts          # ワールド座標変換、ピン/ゲート/ワイヤー/矩形ヒット判定
+│   │   └── renderer.ts         # 4値発光ワイヤー、ゲート記号、Digital風モジュール内部ライブ描画
 │   ├── store/
-│   │   └── useProjectStore.ts # Undo/Redo、LocalStorage自動保存、クリップボード、実行モード管理
-│   ├── components/         # UI クローム層
-│   │   ├── TopBar.tsx      # ツールバー・タブ・クロック制御・ファイル/HDL操作
-│   │   ├── ComponentPalette.tsx # 検索付きカテゴリ別パーツパレット
-│   │   ├── CircuitCanvas.tsx    # ドラッグ・配線・ズームパン制御キャンバス
-│   │   ├── InspectorPanel.tsx   # 選択要素のプロパティ・リアルタイム信号表示
-│   │   ├── ContextMenu.tsx      # コンテキストに応じた右クリックメニュー
-│   │   └── Modals.tsx      # HDL読込 / ネットリスト出力 / シンボル編集 / HEXエディタ
+│   │   └── useProjectStore.ts  # Undo/Redo、LocalStorage自動保存、クリップボード、実行モード管理
+│   ├── components/             # UI クローム層
+│   │   ├── TopBar.tsx          # ツールバー・タブ・クロック制御・ファイル/HDL操作
+│   │   ├── ComponentPalette.tsx # 検索付きカテゴリ別パーツパレット & HDL プロジェクトツリー
+│   │   ├── CircuitCanvas.tsx   # ドラッグ・配線・ズームパン制御キャンバス
+│   │   ├── HdlDockPanel.tsx    # ドッキング型 HDL ソースビューア・エディタ・再論理合成パネル
+│   │   ├── InspectorPanel.tsx  # 選択要素のプロパティ・リアルタイム信号表示
+│   │   ├── ContextMenu.tsx     # コンテキストに応じた右クリックメニュー
+│   │   └── Modals.tsx          # HDL読込 / ネットリスト出力 / シンボル編集 / HEXエディタ
 │   ├── App.tsx
 │   ├── main.tsx
 │   └── styles.css
-├── tests/
-│   └── engine.test.ts      # Vitest ユニットテスト群
-├── wrangler.jsonc          # Cloudflare Workers 静的アセット配信設定
+├── tests/                      # Vitest ユニット・結合テスト群
+├── wrangler.jsonc              # Cloudflare Workers 静的アセット配信設定
+├── vite.config.ts              # Vite+ 統合設定（ビルド / テスト / リント / フォーマット）
 └── package.json
 ```
 
