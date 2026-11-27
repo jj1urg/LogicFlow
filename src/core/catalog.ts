@@ -1001,3 +1001,220 @@ export function getGateBounds(
     height: h,
   };
 }
+
+// --- Component Replacement Helpers (preserve wires when swapping components) ---
+
+const REPLACEMENT_GROUPS: GateType[][] = [
+  ['TOGGLE', 'BUTTON', 'CLOCK', 'CONST', 'MODULE_IN'],
+  ['LED', 'NUM_DISPLAY', 'SEVEN_SEG', 'MODULE_OUT'],
+  ['AND', 'OR', 'NAND', 'NOR', 'XOR', 'XNOR'],
+  ['NOT', 'BUF', 'TRIBUF'],
+  ['MUX', 'DEMUX', 'DECODER'],
+  ['HALF_ADDER', 'FULL_ADDER', 'ADDER', 'COMPARATOR'],
+  ['D_FF', 'REGISTER', 'D_LATCH', 'SR_LATCH', 'JK_FF', 'T_FF', 'COUNTER'],
+  ['RAM', 'ROM'],
+  ['TUNNEL', 'SPLITTER', 'IFACE_BUNDLE'],
+];
+
+/** Return quick-swap compatible component types for the given gate type (excluding itself) */
+export function getCompatibleReplacementTypes(type: GateType): GateType[] {
+  const grp = REPLACEMENT_GROUPS.find((g) => g.includes(type));
+  return grp ? grp.filter((t) => t !== type) : [];
+}
+
+/** Build a replacement gate preserving position, rotation, compatible props, and custom label */
+export function buildReplacementGate(
+  oldGate: GateInstance,
+  newType: GateType,
+  project?: ProjectDocument,
+  newSubcircuitId?: string,
+): GateInstance {
+  const newEntry = GATE_CATALOG[newType];
+  const nextProps: GateProps = { ...newEntry.defaultProps };
+  const oldProps = oldGate.props;
+
+  // Preserve compatible properties across replacement
+  if (
+    oldProps.bitWidth !== undefined &&
+    newType !== 'HALF_ADDER' &&
+    newType !== 'FULL_ADDER' &&
+    newType !== 'SR_LATCH' &&
+    newType !== 'JK_FF' &&
+    newType !== 'T_FF' &&
+    newType !== 'DECODER' &&
+    newType !== 'SEVEN_SEG' &&
+    newType !== 'SUBCIRCUIT'
+  ) {
+    nextProps.bitWidth = oldProps.bitWidth;
+  }
+  if (
+    oldProps.inputCount !== undefined &&
+    ['AND', 'OR', 'NAND', 'NOR', 'XOR', 'XNOR', 'MUX', 'DEMUX'].includes(newType)
+  ) {
+    nextProps.inputCount = oldProps.inputCount;
+  }
+  if (oldProps.selectBits !== undefined && ['MUX', 'DEMUX', 'DECODER'].includes(newType)) {
+    nextProps.selectBits = oldProps.selectBits;
+  }
+  if (oldProps.value !== undefined && ['TOGGLE', 'CONST', 'MODULE_IN'].includes(newType)) {
+    nextProps.value = oldProps.value;
+  }
+  if (oldProps.portSide !== undefined && ['MODULE_IN', 'MODULE_OUT'].includes(newType)) {
+    nextProps.portSide = oldProps.portSide;
+  }
+  if (oldProps.portOrder !== undefined && ['MODULE_IN', 'MODULE_OUT'].includes(newType)) {
+    nextProps.portOrder = oldProps.portOrder;
+  }
+  if (oldProps.hasCarryIn !== undefined && newType === 'ADDER') {
+    nextProps.hasCarryIn = oldProps.hasCarryIn;
+  }
+  if (oldProps.hasEnable !== undefined && ['D_FF', 'REGISTER'].includes(newType)) {
+    nextProps.hasEnable = oldProps.hasEnable;
+  }
+  if (newType === 'SUBCIRCUIT' && newSubcircuitId) {
+    nextProps.subcircuitId = newSubcircuitId;
+    nextProps.displayMode = oldProps.displayMode ?? 'live';
+  }
+
+  let nextLabel = oldGate.label;
+  if (newType === 'SUBCIRCUIT' && newSubcircuitId && project?.circuits[newSubcircuitId]) {
+    nextLabel = project.circuits[newSubcircuitId].name;
+  } else if (!nextLabel && (newType === 'MODULE_IN' || newType === 'MODULE_OUT')) {
+    nextLabel = newType === 'MODULE_IN' ? 'IN' : 'OUT';
+  } else if (
+    oldGate.type === 'SUBCIRCUIT' &&
+    newType !== 'SUBCIRCUIT' &&
+    oldProps.subcircuitId &&
+    project?.circuits[oldProps.subcircuitId]?.name === oldGate.label
+  ) {
+    nextLabel = '';
+  }
+
+  return {
+    id: oldGate.id,
+    type: newType,
+    x: oldGate.x,
+    y: oldGate.y,
+    rotation: oldGate.rotation,
+    label: nextLabel,
+    props: nextProps,
+  };
+}
+
+const PIN_ALIAS_PAIRS: [string, string][] = [
+  ['rst', 'clr'],
+  ['c', 'cout'],
+  ['io', 'out'],
+  ['io', 'in'],
+  ['in', 'in0'],
+  ['in0', 'a'],
+  ['in1', 'b'],
+  ['d', 'in0'],
+  ['q', 'out'],
+  ['s', 'out'],
+];
+
+/** Map pin IDs from `oldGate` to `newGate` so existing wires stay connected during component replacement */
+export function mapReplacementPins(
+  oldGate: GateInstance,
+  newGate: GateInstance,
+  project?: ProjectDocument,
+): Map<string, string> {
+  const oldPins = getGatePins(oldGate, project);
+  const newPins = getGatePins(newGate, project);
+  const mapping = new Map<string, string>();
+  const usedNewIds = new Set<string>();
+
+  // 1. Exact pin ID match
+  for (const op of oldPins) {
+    const exact = newPins.find((np) => np.id === op.id && !usedNewIds.has(np.id));
+    if (exact) {
+      mapping.set(op.id, exact.id);
+      usedNewIds.add(exact.id);
+    }
+  }
+
+  // 2. Semantic alias match (e.g. rst <-> clr, c <-> cout, in0 <-> a)
+  for (const op of oldPins) {
+    if (mapping.has(op.id)) continue;
+    for (const [a, b] of PIN_ALIAS_PAIRS) {
+      const targetId = op.id === a ? b : op.id === b ? a : null;
+      if (!targetId) continue;
+      const cand = newPins.find((np) => np.id === targetId && !usedNewIds.has(np.id));
+      if (cand) {
+        mapping.set(op.id, cand.id);
+        usedNewIds.add(cand.id);
+        break;
+      }
+    }
+  }
+
+  // 3. Same-direction positional order match (sorted by y, then x)
+  const sortPins = (list: PinDef[]) => [...list].sort((p1, p2) => p1.y - p2.y || p1.x - p2.x);
+  const dirsMatch = (d1: PinDef['dir'], d2: PinDef['dir']) =>
+    d1 === d2 || d1 === 'inout' || d2 === 'inout';
+
+  for (const op of sortPins(oldPins)) {
+    if (mapping.has(op.id)) continue;
+    const cand = sortPins(newPins).find(
+      (np) => !usedNewIds.has(np.id) && dirsMatch(op.dir, np.dir),
+    );
+    if (cand) {
+      mapping.set(op.id, cand.id);
+      usedNewIds.add(cand.id);
+    }
+  }
+
+  return mapping;
+}
+
+/**
+ * Replace a gate inside `circuit` in-place while preserving connected wires:
+ * mapped pins reattach automatically and any unmapped endpoints become reusable floating wire ends!
+ */
+export function applyGateReplacement(
+  circuit: CircuitDocument,
+  gateId: string,
+  newType: GateType,
+  project?: ProjectDocument,
+  newSubcircuitId?: string,
+): { replaced: boolean; oldType?: GateType; reattached: number; detachedToFloating: number } {
+  const idx = circuit.gates.findIndex((g) => g.id === gateId);
+  if (idx === -1) return { replaced: false, reattached: 0, detachedToFloating: 0 };
+
+  const oldGate = circuit.gates[idx];
+  if (oldGate.type === newType && oldGate.props.subcircuitId === newSubcircuitId) {
+    return { replaced: false, oldType: oldGate.type, reattached: 0, detachedToFloating: 0 };
+  }
+
+  const newGate = buildReplacementGate(oldGate, newType, project, newSubcircuitId);
+  const pinMap = mapReplacementPins(oldGate, newGate, project);
+  circuit.gates[idx] = newGate;
+
+  let reattached = 0;
+  let detachedToFloating = 0;
+  for (const w of circuit.wires) {
+    if (w.from?.gateId === gateId) {
+      const mapped = pinMap.get(w.from.pinId);
+      if (mapped) {
+        w.from = { gateId, pinId: mapped };
+        reattached++;
+      } else {
+        w.from = undefined;
+        detachedToFloating++;
+      }
+    }
+    if (w.to?.gateId === gateId) {
+      const mapped = pinMap.get(w.to.pinId);
+      if (mapped) {
+        w.to = { gateId, pinId: mapped };
+        reattached++;
+      } else {
+        w.to = undefined;
+        detachedToFloating++;
+      }
+    }
+  }
+
+  return { replaced: true, oldType: oldGate.type, reattached, detachedToFloating };
+}

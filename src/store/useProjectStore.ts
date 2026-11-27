@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { GATE_CATALOG, GRID_SIZE, snapToGrid } from '../core/catalog';
+import { applyGateReplacement, GATE_CATALOG, GRID_SIZE, snapToGrid } from '../core/catalog';
 import {
   HdlSourceFile,
   importVerilogFilesToCircuits,
@@ -515,13 +515,64 @@ export function useProjectStore() {
           propsPatch?.splitWidths !== undefined ||
           propsPatch?.splitMode !== undefined ||
           propsPatch?.bundleMode !== undefined ||
-          propsPatch?.interfaceFields !== undefined
+          propsPatch?.interfaceFields !== undefined ||
+          propsPatch?.hasCarryIn !== undefined ||
+          propsPatch?.hasEnable !== undefined
         ) {
           circ.wires = rerouteWiresForGates(new Set([gateId]), circ, d);
         }
       }, recordHistory);
     },
     [mutateProject],
+  );
+
+  /** Replace a gate with another component type while preserving and re-attaching existing wires */
+  const replaceGate = useCallback(
+    (gateId: string, newType: GateType, subcircuitId?: string) => {
+      let info: ReturnType<typeof applyGateReplacement> | null = null;
+      mutateProject((d) => {
+        const circ = d.circuits[d.activeCircuitId];
+        info = applyGateReplacement(circ, gateId, newType, d, subcircuitId);
+        if (!info.replaced) return;
+        circ.wires = rerouteWiresForGates(new Set([gateId]), circ, d);
+        markHdlDiverged(circ);
+      });
+      if (info && (info as ReturnType<typeof applyGateReplacement>).replaced) {
+        const res = info as ReturnType<typeof applyGateReplacement>;
+        const newName =
+          newType === 'SUBCIRCUIT' && subcircuitId
+            ? (project.circuits[subcircuitId]?.name ?? GATE_CATALOG[newType].shortName)
+            : GATE_CATALOG[newType].name;
+        const detail =
+          res.detachedToFloating > 0
+            ? `（接続維持 ${res.reattached}本 / フローティング保持 ${res.detachedToFloating}本）`
+            : res.reattached > 0
+              ? `（配線 ${res.reattached}本を維持）`
+              : '';
+        showToast(`${newName} に差し替えました${detail}`);
+      }
+    },
+    [mutateProject, project.circuits, showToast],
+  );
+
+  /** Delete selected gates while detaching (preserving) connected wires as extendable floating endpoints */
+  const deleteGatesKeepWires = useCallback(
+    (targetIds?: Set<string>) => {
+      const ids = targetIds ?? selectedGateIds;
+      if (ids.size === 0) return;
+      mutateProject((d) => {
+        const circ = d.circuits[d.activeCircuitId];
+        circ.gates = circ.gates.filter((g) => !ids.has(g.id));
+        for (const w of circ.wires) {
+          if (w.from && ids.has(w.from.gateId)) w.from = undefined;
+          if (w.to && ids.has(w.to.gateId)) w.to = undefined;
+        }
+        markHdlDiverged(circ);
+      });
+      setSelectedGateIds(new Set());
+      showToast('配線を残してパーツを削除しました（終端リングから再接続できます）');
+    },
+    [mutateProject, selectedGateIds, showToast],
   );
 
   const rotateSelectedGates = useCallback(() => {
@@ -1271,6 +1322,7 @@ export function useProjectStore() {
     addGate,
     moveGates,
     updateGate,
+    replaceGate,
     rotateSelectedGates,
     alignSelectedToGrid,
     addWire,
@@ -1280,6 +1332,7 @@ export function useProjectStore() {
     rerouteSingleWire,
     rerouteAllWires,
     deleteSelection,
+    deleteGatesKeepWires,
     copySelection,
     pasteClipboard,
     duplicateSelection,

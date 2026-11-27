@@ -9,7 +9,7 @@ import {
   Sliders,
   Trash2,
 } from 'lucide-react';
-import { GATE_CATALOG } from '../core/catalog';
+import { GATE_CATALOG, getCompatibleReplacementTypes } from '../core/catalog';
 import {
   BIT_X,
   dominantState,
@@ -23,6 +23,7 @@ import {
   CircuitDocument,
   GateInstance,
   GateProps,
+  GateType,
   PinSide,
   ProjectDocument,
   RouteMode,
@@ -44,6 +45,7 @@ interface InspectorPanelProps {
     patch: Partial<GateInstance>,
     propsPatch?: Partial<GateProps>,
   ) => void;
+  onReplaceGate: (gateId: string, newType: GateType) => void;
   onUpdateWire: (wireId: string, patch: Partial<Wire>) => void;
   onRerouteWire: (wireId: string) => void;
   onRenameCircuit: (circuitId: string, name: string) => void;
@@ -63,6 +65,7 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
   selectedGateIds,
   selectedWireIds,
   onUpdateGate,
+  onReplaceGate,
   onUpdateWire,
   onRerouteWire,
   onRenameCircuit,
@@ -114,6 +117,7 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
             gate={selectedGate}
             project={project}
             onUpdate={(patch, propsPatch) => onUpdateGate(selectedGate.id, patch, propsPatch)}
+            onReplace={(newType) => onReplaceGate(selectedGate.id, newType)}
             onOpenCircuit={onOpenCircuit}
             onOpenHdlSource={onOpenHdlSource}
             onOpenMemoryEditor={() => onOpenMemoryEditor(selectedGate.id)}
@@ -156,10 +160,19 @@ const GateInspector: React.FC<{
   gate: GateInstance;
   project: ProjectDocument;
   onUpdate: (patch: Partial<GateInstance>, propsPatch?: Partial<GateProps>) => void;
+  onReplace: (newType: GateType) => void;
   onOpenCircuit: (circuitId: string) => void;
   onOpenHdlSource: (circuitId: string) => void;
   onOpenMemoryEditor: () => void;
-}> = ({ gate, project, onUpdate, onOpenCircuit, onOpenHdlSource, onOpenMemoryEditor }) => {
+}> = ({
+  gate,
+  project,
+  onUpdate,
+  onReplace,
+  onOpenCircuit,
+  onOpenHdlSource,
+  onOpenMemoryEditor,
+}) => {
   const entry = GATE_CATALOG[gate.type];
   const p = gate.props;
 
@@ -197,6 +210,47 @@ const GateInspector: React.FC<{
     <>
       <div className="inspector-section">
         <div className="section-title">{entry.name}</div>
+        {gate.type !== 'SUBCIRCUIT' && (
+          <div className="field-row">
+            <label>パーツ差し替え (配線維持)</label>
+            <select
+              value={gate.type}
+              onChange={(e) => {
+                const nextType = e.target.value as GateType;
+                if (nextType !== gate.type) onReplace(nextType);
+              }}
+            >
+              <option value={gate.type}>{entry.name}（現在）</option>
+              {(() => {
+                const compat = getCompatibleReplacementTypes(gate.type);
+                const compatSet = new Set<GateType>([gate.type, ...compat]);
+                const others = (Object.keys(GATE_CATALOG) as GateType[]).filter(
+                  (t) => t !== 'SUBCIRCUIT' && !compatSet.has(t),
+                );
+                return (
+                  <>
+                    {compat.length > 0 && (
+                      <optgroup label="互換パーツ（おすすめ）">
+                        {compat.map((t) => (
+                          <option key={t} value={t}>
+                            {GATE_CATALOG[t].name}
+                          </option>
+                        ))}
+                      </optgroup>
+                    )}
+                    <optgroup label="その他の基本パーツ">
+                      {others.map((t) => (
+                        <option key={t} value={t}>
+                          {GATE_CATALOG[t].name}
+                        </option>
+                      ))}
+                    </optgroup>
+                  </>
+                );
+              })()}
+            </select>
+          </div>
+        )}
         <div className="field-row">
           <label>ラベル名</label>
           <input

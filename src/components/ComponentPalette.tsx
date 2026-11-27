@@ -137,7 +137,7 @@ export const ComponentPalette: React.FC<ComponentPaletteProps> = ({
       return;
     }
     e.dataTransfer.setData('application/logicflow-gate', JSON.stringify({ type, subcircuitId }));
-    e.dataTransfer.effectAllowed = 'copy';
+    e.dataTransfer.effectAllowed = 'copyMove';
     // Suppress the default browser list-row drag ghost so we render the real gate/module symbol instead!
     e.dataTransfer.setDragImage(getTransparentDragImage(), 0, 0);
     onDragStartGate({ type, subcircuitId }, e.clientX, e.clientY);

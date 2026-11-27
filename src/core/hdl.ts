@@ -243,6 +243,7 @@ interface ParsedModule {
   params: Map<string, number>;
   ports: ParsedPort[];
   wires: Map<string, number>;
+  signedNets: Set<string>;
   assigns: ParsedAssign[];
   ffs: ParsedFF[];
   primitives: { kind: GateType; instName: string; outNet: string; inNets: string[] }[];
@@ -360,9 +361,20 @@ function extractOriginalModuleSources(rawSource: string): Map<string, string> {
   return result;
 }
 
-/** Safely evaluate simple constant integer expressions like "4", "WIDTH-1", "N / 2" without eval */
+/** Safely evaluate constant integer expressions like "4", "WIDTH-1", "N / 2", "$clog2(RATIO)" without eval */
 function evalParamExpr(expr: string, params: Map<string, number>): number | null {
   let s = expr.trim();
+  // Resolve SystemVerilog $clog2(...) calls from innermost outward
+  for (let pass = 0; pass < 8 && /\$clog2\s*\(/.test(s); pass++) {
+    const next = s.replace(/\$clog2\s*\(([^()]+)\)/g, (_, inner: string) => {
+      const v = evalParamExpr(inner, params);
+      if (v === null) return '__ERR__';
+      const cl = v <= 1 ? 0 : Math.ceil(Math.log2(v));
+      return String(cl);
+    });
+    if (next === s || next.includes('__ERR__')) return null;
+    s = next;
+  }
   for (const [k, v] of params.entries()) {
     s = s.replace(new RegExp(`\\b${k}\\b`, 'g'), String(v));
   }
@@ -678,10 +690,220 @@ function extractProceduralBody(src: string, fromIdx: number): BlockRange | null 
     }
   }
 
+  // For (...) body
+  if (/^for\s*\(/.test(src.slice(i))) {
+    const parenOpen = src.indexOf('(', i);
+    if (parenOpen !== -1) {
+      let d = 0;
+      let pClose = -1;
+      for (let k = parenOpen; k < src.length; k++) {
+        if (src[k] === '(') d++;
+        else if (src[k] === ')') {
+          d--;
+          if (d === 0) {
+            pClose = k;
+            break;
+          }
+        }
+      }
+      if (pClose !== -1) {
+        const loopBody = extractProceduralBody(src, pClose + 1);
+        if (loopBody) {
+          return { start: i, end: loopBody.end, inner: src.slice(i, loopBody.end) };
+        }
+      }
+    }
+  }
+
   // Single statement ending with ';'
   const semi = src.indexOf(';', i);
   if (semi === -1) return null;
   return { start: i, end: semi + 1, inner: src.slice(i, semi + 1) };
+}
+
+interface ArrayDeclInfo {
+  elemWidth: number;
+  dims: [number, number][];
+  signed: boolean;
+}
+
+/** Statically unroll simple compile-time `for` loops inside always_ff / always_comb blocks */
+function unrollForLoops(code: string, params: Map<string, number>, depth = 0): string {
+  if (depth > 8 || !/\bfor\s*\(/.test(code)) return code;
+  const re = /\bfor\s*\(/g;
+  let out = '';
+  let last = 0;
+  let m: RegExpExecArray | null;
+
+  while ((m = re.exec(code)) !== null) {
+    if (m.index < last) continue;
+    const parenOpen = m.index + m[0].length - 1;
+    let d = 0;
+    let pClose = -1;
+    for (let k = parenOpen; k < code.length; k++) {
+      if (code[k] === '(') d++;
+      else if (code[k] === ')') {
+        d--;
+        if (d === 0) {
+          pClose = k;
+          break;
+        }
+      }
+    }
+    if (pClose === -1) continue;
+    const bodyBlk = extractProceduralBody(code, pClose + 1);
+    if (!bodyBlk) continue;
+
+    const header = code.slice(parenOpen + 1, pClose);
+    const parts = header.split(';').map((s) => s.trim());
+    if (parts.length !== 3) continue;
+
+    const initM = parts[0].match(/^(?:(?:int|integer|genvar)\s+)?(\w+)\s*=\s*(.+)$/);
+    if (!initM) continue;
+    const varName = initM[1];
+    const initVal = evalParamExpr(initM[2], params);
+    if (initVal === null) continue;
+
+    // Parse loop step: i++, ++i, i--, --i, i += k, i -= k, i = i + k, i = i - k
+    const stepStr = parts[2];
+    let stepDelta: number | null = null;
+    if (new RegExp(`^${varName}\\s*\\+\\+$|^\\+\\+\\s*${varName}$`).test(stepStr)) {
+      stepDelta = 1;
+    } else if (new RegExp(`^${varName}\\s*--$|^--\\s*${varName}$`).test(stepStr)) {
+      stepDelta = -1;
+    } else {
+      const addEq = stepStr.match(new RegExp(`^${varName}\\s*(\\+|-)=\\s*(.+)$`));
+      if (addEq) {
+        const delta = evalParamExpr(addEq[2], params);
+        if (delta !== null) stepDelta = addEq[1] === '+' ? delta : -delta;
+      } else {
+        const assignStep = stepStr.match(
+          new RegExp(`^${varName}\\s*=\\s*${varName}\\s*(\\+|-)\\s*(.+)$`),
+        );
+        if (assignStep) {
+          const delta = evalParamExpr(assignStep[2], params);
+          if (delta !== null) stepDelta = assignStep[1] === '+' ? delta : -delta;
+        }
+      }
+    }
+    if (stepDelta === null || stepDelta === 0) continue;
+
+    // Parse condition: lhs (<= | >= | < | > | !=) rhs
+    const condM = parts[1].match(/^(.+?)\s*(<=|>=|<|>|!=)\s*(.+)$/);
+    if (!condM) continue;
+    const condLhs = condM[1].trim();
+    const condOp = condM[2];
+    const condRhs = condM[3].trim();
+
+    const evalCond = (curVal: number): boolean => {
+      const localParams = new Map(params);
+      localParams.set(varName, curVal);
+      const lv = evalParamExpr(condLhs, localParams);
+      const rv = evalParamExpr(condRhs, localParams);
+      if (lv === null || rv === null) return false;
+      if (condOp === '<') return lv < rv;
+      if (condOp === '<=') return lv <= rv;
+      if (condOp === '>') return lv > rv;
+      if (condOp === '>=') return lv >= rv;
+      if (condOp === '!=') return lv !== rv;
+      return false;
+    };
+
+    out += code.slice(last, m.index);
+    const varRe = new RegExp(`\\b${varName}\\b`, 'g');
+    let unrolled = '';
+    let cur = initVal;
+    let iters = 0;
+    while (evalCond(cur) && iters < 64) {
+      const localParams = new Map(params);
+      localParams.set(varName, cur);
+      const substituted = bodyBlk.inner.replace(varRe, String(cur));
+      unrolled += `${unrollForLoops(substituted, localParams, depth + 1)}\n`;
+      cur += stepDelta;
+      iters++;
+    }
+    out += unrolled;
+    last = bodyBlk.end;
+    re.lastIndex = last;
+  }
+
+  out += code.slice(last);
+  return out;
+}
+
+/** Flatten constant-indexed unpacked array accesses like `integ_reg[i-1]` or `comb_delay_reg[0][0]` into scalar net names */
+function flattenArrayAccesses(
+  text: string,
+  arrayDecls: Map<string, ArrayDeclInfo>,
+  params: Map<string, number>,
+): string {
+  if (arrayDecls.size === 0) return text;
+  let out = text;
+  for (const [name, info] of arrayDecls.entries()) {
+    const dimCount = info.dims.length;
+    if (dimCount === 1) {
+      const re1 = new RegExp(`\\b${name}\\s*\\[([^\\[\\]:]+)\\]`, 'g');
+      out = out.replace(re1, (full, e0: string) => {
+        const v0 = evalParamExpr(e0, params);
+        return v0 !== null ? `${name}__${v0}` : full;
+      });
+    } else if (dimCount === 2) {
+      const re2 = new RegExp(`\\b${name}\\s*\\[([^\\[\\]:]+)\\]\\s*\\[([^\\[\\]:]+)\\]`, 'g');
+      out = out.replace(re2, (full, e0: string, e1: string) => {
+        const v0 = evalParamExpr(e0, params);
+        const v1 = evalParamExpr(e1, params);
+        return v0 !== null && v1 !== null ? `${name}__${v0}__${v1}` : full;
+      });
+    }
+  }
+  return out;
+}
+
+/** Collect all scalar target net names assigned (`<=` or `=`) inside a procedural block */
+function collectAssignedTargets(code: string): Set<string> {
+  const targets = new Set<string>();
+  const re = /\b([a-zA-Z_]\w*)\s*(?:<=|=(?!=))/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(code)) !== null) {
+    const id = m[1];
+    if (!KEYWORDS.has(id)) targets.add(id);
+  }
+  return targets;
+}
+
+/**
+ * Extract an explicit enable condition when a register's next-state expression preserves itself on one branch:
+ *   `(cond) ? (nextVal) : (target)` -> `{ enExpr: cond, dExpr: nextVal }`
+ * Also collapses nested guards `(c1) ? ((c2) ? v : target) : target` -> `en = (c1) && (c2)`.
+ */
+function extractRegisterEnable(
+  target: string,
+  rawExpr: string,
+): { enExpr?: string; dExpr: string } {
+  const guards: string[] = [];
+  let cur = stripOuterParens(rawExpr);
+
+  for (let depth = 0; depth < 6; depth++) {
+    const tern = findTopLevelTernary(cur);
+    if (!tern) break;
+    const cond = stripOuterParens(cur.slice(0, tern.qIdx));
+    const tv = stripOuterParens(cur.slice(tern.qIdx + 1, tern.cIdx));
+    const fv = stripOuterParens(cur.slice(tern.cIdx + 1));
+
+    if (fv === target && tv !== target) {
+      guards.push(cond);
+      cur = tv;
+    } else if (tv === target && fv !== target) {
+      guards.push(`!(${cond})`);
+      cur = fv;
+    } else {
+      break;
+    }
+  }
+
+  if (guards.length === 0) return { dExpr: cur };
+  const enExpr = guards.length === 1 ? guards[0] : guards.map((g) => `(${g})`).join(' && ');
+  return { enExpr, dExpr: cur };
 }
 
 /** Strip non-synthesizable blocks (initial, final, task, function, property, sequence, assertions, system tasks) */
@@ -760,7 +982,11 @@ function stripNonSynthesizable(body: string): string {
   }
 
   // 4. Standalone system task calls ($display, $finish, $monitor, $dumpvars, $error, etc.)
-  out = out.replace(/(?:#\s*(?:\([^)]*\)|\d+)\s*)?\$\w+\s*(?:\([\s\S]*?\))?\s*;/g, ' ');
+  // Never strip expression system functions like $clog2 / $bits / $signed / $unsigned!
+  out = out.replace(
+    /(^|[;\n]\s*)(?:#\s*(?:\([^)]*\)|\d+)\s*)?\$(?!clog2\b|bits\b|signed\b|unsigned\b|size\b|left\b|right\b|high\b|low\b)\w+\s*(?:\([\s\S]*?\))?\s*;/g,
+    '$1 ',
+  );
 
   // 5. Non-structural declarations: import, export, typedef, timeunit, timeprecision, genvar, real, string
   out = out.replace(
@@ -859,7 +1085,9 @@ function parseProceduralAssignments(
         const itemBlk = extractProceduralBody(caseInner, colon + 1);
         if (!itemBlk) break;
         ci = itemBlk.end;
-        const itemMap = parseProceduralAssignments(itemBlk.inner, new Map());
+        // Pass current `result` so guarded assignments inside a case item (e.g. `2'b01: if (carry_f) PC_we = 1'b1;`)
+        // preserve the outer default instead of dropping the `if` condition!
+        const itemMap = parseProceduralAssignments(itemBlk.inner, result);
         const isDefault = labelRaw === 'default';
         const cond = isDefault
           ? null
@@ -870,16 +1098,21 @@ function parseProceduralAssignments(
       }
 
       const targets = new Set<string>();
-      for (const b of branches) for (const k of b.map.keys()) targets.add(k);
+      for (const b of branches) {
+        for (const [k, v] of b.map.entries()) {
+          if (v !== result.get(k)) targets.add(k);
+        }
+      }
       const defaultBranch = branches.find((b) => b.cond === null);
 
       for (const t of targets) {
-        let expr = defaultBranch?.map.get(t) ?? result.get(t) ?? '__case_undef__';
+        const baseFallback = result.get(t);
+        let expr = defaultBranch?.map.get(t) ?? baseFallback ?? '__case_undef__';
         for (let bi = branches.length - 1; bi >= 0; bi--) {
           const br = branches[bi];
           if (br.cond === null) continue;
           const val = br.map.get(t);
-          if (val !== undefined) {
+          if (val !== undefined && val !== baseFallback) {
             expr = `(${br.cond}) ? (${val}) : (${expr})`;
           }
         }
@@ -913,6 +1146,8 @@ function parseProceduralAssignments(
 function extractAndSynthesizeAlwaysBlocks(
   body: string,
   modName: string,
+  params: Map<string, number>,
+  arrayDecls: Map<string, ArrayDeclInfo>,
   assigns: ParsedAssign[],
   ffs: ParsedFF[],
   warnings: string[],
@@ -958,11 +1193,18 @@ function extractAndSynthesizeAlwaysBlocks(
     last = blk.end;
     re.lastIndex = last;
 
+    // Statically unroll compile-time `for` loops & flatten unpacked array accesses before procedural parsing!
+    const expandedInner = flattenArrayAccesses(
+      unrollForLoops(blk.inner, params),
+      arrayDecls,
+      params,
+    );
+
     const isClocked = kind === 'always_ff' || /\b(?:posedge|negedge)\b/.test(sens);
 
     if (!isClocked) {
       // Combinational always_comb / always @(*) -> synthesize assigns, if/else, case!
-      const map = parseProceduralAssignments(blk.inner);
+      const map = parseProceduralAssignments(expandedInner);
       for (const [lhs, rhs] of map.entries()) {
         assigns.push({ lhs, rhs });
       }
@@ -985,9 +1227,10 @@ function extractAndSynthesizeAlwaysBlocks(
     }
 
     // Check top-level reset `if (rst) ... else ...` pattern inside clocked block
-    const innerTrim = blk.inner.trim();
+    const innerTrim = expandedInner.trim();
     const topIfM = innerTrim.match(/^(?:unique\s+|priority\s+)?if\s*\(/);
     let bodyToSynth = innerTrim;
+    let resetInner = '';
     let detectedRstNet = asyncRstNet;
     let detectedRstLow = asyncRstLow;
 
@@ -1022,33 +1265,26 @@ function extractAndSynthesizeAlwaysBlocks(
           detectedRstNet = posRstM[1];
           detectedRstLow = false;
         }
+        resetInner = thenBlk!.inner;
         bodyToSynth = elseBlk.inner.trim();
       }
     }
 
-    // Check optional enable wrapper: `if (en) begin ... end` (without else)
-    let enExpr: string | undefined;
-    const enIfM = bodyToSynth.match(/^(?:unique\s+|priority\s+)?if\s*\(/);
-    if (enIfM) {
-      const cStart = enIfM[0].length;
-      let d = 1;
-      let k = cStart;
-      while (k < bodyToSynth.length && d > 0) {
-        if (bodyToSynth[k] === '(') d++;
-        else if (bodyToSynth[k] === ')') d--;
-        k++;
-      }
-      const cond = bodyToSynth.slice(cStart, k - 1).trim();
-      const thenBlk = extractProceduralBody(bodyToSynth, k);
-      const trailing = thenBlk ? bodyToSynth.slice(thenBlk.end).trim() : '';
-      if (thenBlk && trailing.length === 0) {
-        enExpr = cond;
-        bodyToSynth = thenBlk.inner.trim();
-      }
+    // Seed every register assigned in this always_ff with self-hold (`target -> target`) so
+    // partial conditional assignments (`if (en) reg <= next;`) preserve state on unmet branches!
+    const allTargets = new Set<string>([
+      ...collectAssignedTargets(resetInner),
+      ...collectAssignedTargets(bodyToSynth),
+    ]);
+    const initHoldMap = new Map<string, string>();
+    for (const t of allTargets) {
+      initHoldMap.set(t, t);
     }
 
-    const regAssigns = parseProceduralAssignments(bodyToSynth);
-    for (const [target, dExpr] of regAssigns.entries()) {
+    const regAssigns = parseProceduralAssignments(bodyToSynth, initHoldMap);
+    for (const [target, rawExpr] of regAssigns.entries()) {
+      if (stripOuterParens(rawExpr) === target) continue;
+      const { enExpr, dExpr } = extractRegisterEnable(target, rawExpr);
       ffs.push({
         target,
         clkNet,
@@ -1092,6 +1328,8 @@ function parseModules(source: string, warnings: string[]): ParsedModule[] {
 
     const portMap = new Map<string, ParsedPort>();
     const wires = new Map<string, number>();
+    const signedNets = new Set<string>();
+    const arrayDecls = new Map<string, ArrayDeclInfo>();
     const assigns: ParsedAssign[] = [];
     const ffs: ParsedFF[] = [];
 
@@ -1100,19 +1338,23 @@ function parseModules(source: string, warnings: string[]): ParsedModule[] {
       const parts = splitTopLevel(headerPortsRaw, ',');
       let curDir: 'in' | 'out' | null = null;
       let curWidth = 1;
+      let curSigned = false;
       for (const rawPart of parts) {
         const partNoInit = rawPart.replace(/\s*=[\s\S]*$/, '').trim();
         if (!partNoInit) continue;
         const dirMatch = partNoInit.match(/^(input|output|inout)\b/);
         if (dirMatch) {
           curDir = dirMatch[1] === 'output' ? 'out' : 'in';
+          curSigned = /\bsigned\b/.test(partNoInit);
           const wMatch = partNoInit.match(/(\[[^\]]+\])/);
           curWidth = wMatch ? parseWidthSpec(wMatch[1], params) : 1;
           const nameMatch = partNoInit.match(/(\w+)\s*$/);
           if (nameMatch) {
             portMap.set(nameMatch[1], { name: nameMatch[1], dir: curDir, bitWidth: curWidth });
+            if (curSigned) signedNets.add(nameMatch[1]);
           }
         } else {
+          if (/\bsigned\b/.test(partNoInit)) curSigned = true;
           const wMatch = partNoInit.match(/(\[[^\]]+\])/);
           if (wMatch) curWidth = parseWidthSpec(wMatch[1], params);
           const nameMatch = partNoInit.match(/(\w+)\s*$/);
@@ -1122,6 +1364,7 @@ function parseModules(source: string, warnings: string[]): ParsedModule[] {
               dir: curDir ?? 'in',
               bitWidth: curWidth,
             });
+            if (curSigned) signedNets.add(nameMatch[1]);
           }
         }
       }
@@ -1129,8 +1372,62 @@ function parseModules(source: string, warnings: string[]): ParsedModule[] {
 
     // 1. Strip non-synthesizable statements (assert, initial, final, task, function, $display, etc.)
     const synthBody = stripNonSynthesizable(rawBody);
+
+    // 1b. Pre-scan wire/logic/reg declarations (including 1D/2D unpacked arrays & `signed` flags) BEFORE always unrolling!
+    const preDeclRe =
+      /\b(?:wire|logic|reg|bit)\s+(?:(signed|unsigned)\s+)?(\[[^\]]+\]\s*)?([^;]+);/g;
+    let pd: RegExpExecArray | null;
+    while ((pd = preDeclRe.exec(synthBody)) !== null) {
+      const isSigned = pd[1] === 'signed';
+      const elemWidth = parseWidthSpec(pd[2]?.trim(), params);
+      for (const item of splitTopLevel(pd[3], ',')) {
+        const tr = item.trim();
+        if (!tr || findTopLevelAssignEq(tr) !== -1) continue;
+        const arrM = tr.match(/^(\w+)\s*((?:\[[^\]]+\]\s*)+)$/);
+        if (arrM) {
+          const arrName = arrM[1];
+          const dimMatches = [...arrM[2].matchAll(/\[\s*([^:\]]+)\s*:\s*([^\]]+)\s*\]/g)];
+          const dims: [number, number][] = [];
+          for (const dm of dimMatches) {
+            const a = evalParamExpr(dm[1], params);
+            const b = evalParamExpr(dm[2], params);
+            if (a !== null && b !== null) dims.push([Math.min(a, b), Math.max(a, b)]);
+          }
+          if (dims.length >= 1 && dims.length <= 2) {
+            arrayDecls.set(arrName, { elemWidth, dims, signed: isSigned });
+            if (dims.length === 1) {
+              for (let i = dims[0][0]; i <= dims[0][1] && i - dims[0][0] < 64; i++) {
+                const flat = `${arrName}__${i}`;
+                wires.set(flat, elemWidth);
+                if (isSigned) signedNets.add(flat);
+              }
+            } else {
+              for (let i = dims[0][0]; i <= dims[0][1] && i - dims[0][0] < 32; i++) {
+                for (let j = dims[1][0]; j <= dims[1][1] && j - dims[1][0] < 32; j++) {
+                  const flat = `${arrName}__${i}__${j}`;
+                  wires.set(flat, elemWidth);
+                  if (isSigned) signedNets.add(flat);
+                }
+              }
+            }
+          }
+        } else if (/^\w+$/.test(tr)) {
+          wires.set(tr, elemWidth);
+          if (isSigned) signedNets.add(tr);
+        }
+      }
+    }
+
     // 2. Extract & synthesize always_comb / always / always_ff blocks
-    const body = extractAndSynthesizeAlwaysBlocks(synthBody, modName, assigns, ffs, warnings);
+    const body = extractAndSynthesizeAlwaysBlocks(
+      synthBody,
+      modName,
+      params,
+      arrayDecls,
+      assigns,
+      ffs,
+      warnings,
+    );
 
     const statements = body
       .split(';')
@@ -1148,11 +1445,13 @@ function parseModules(source: string, warnings: string[]): ParsedModule[] {
       );
       if (ioDecl) {
         const dir: 'in' | 'out' = ioDecl[1] === 'output' ? 'out' : 'in';
+        const isSigned = /\bsigned\b/.test(stmt);
         const width = parseWidthSpec(ioDecl[2], params);
         for (const n of ioDecl[3].split(',')) {
           const name = n.trim().split(/\s+/).pop();
           if (name && /^\w+$/.test(name)) {
             portMap.set(name, { name, dir, bitWidth: width });
+            if (isSigned) signedNets.add(name);
           }
         }
         continue;
@@ -1160,20 +1459,25 @@ function parseModules(source: string, warnings: string[]): ParsedModule[] {
 
       // Wire / logic / reg declarations (supports inline init: logic [3:0] w = {a, b}, x = c;)
       const wireDecl = stmt.match(
-        /^(?:wire|logic|reg|bit)\s+(?:(?:signed|unsigned)\s+)?(\[[^\]]+\])?\s*([\s\S]+)$/,
+        /^(?:wire|logic|reg|bit)\s+(?:(signed|unsigned)\s+)?(\[[^\]]+\])?\s*([\s\S]+)$/,
       );
       if (wireDecl) {
-        const width = parseWidthSpec(wireDecl[1], params);
-        for (const n of splitTopLevel(wireDecl[2], ',')) {
+        const isSigned = wireDecl[1] === 'signed';
+        const width = parseWidthSpec(wireDecl[2], params);
+        for (const n of splitTopLevel(wireDecl[3], ',')) {
           const trimmed = n.trim();
           const eqIdx = findTopLevelAssignEq(trimmed);
           if (eqIdx !== -1) {
-            const lhs = trimmed.slice(0, eqIdx).trim();
-            const rhs = trimmed.slice(eqIdx + 1).trim();
-            if (/^\w+$/.test(lhs)) wires.set(lhs, width);
+            const lhs = flattenArrayAccesses(trimmed.slice(0, eqIdx).trim(), arrayDecls, params);
+            const rhs = flattenArrayAccesses(trimmed.slice(eqIdx + 1).trim(), arrayDecls, params);
+            if (/^\w+$/.test(lhs)) {
+              wires.set(lhs, width);
+              if (isSigned) signedNets.add(lhs);
+            }
             if (lhs && rhs) assigns.push({ lhs, rhs });
           } else if (/^\w+$/.test(trimmed)) {
             wires.set(trimmed, width);
+            if (isSigned) signedNets.add(trimmed);
           }
         }
         continue;
@@ -1187,8 +1491,8 @@ function parseModules(source: string, warnings: string[]): ParsedModule[] {
         for (const item of splitTopLevel(assignHead[1], ',')) {
           const eqIdx = findTopLevelAssignEq(item);
           if (eqIdx !== -1) {
-            const lhs = item.slice(0, eqIdx).trim();
-            const rhs = item.slice(eqIdx + 1).trim();
+            const lhs = flattenArrayAccesses(item.slice(0, eqIdx).trim(), arrayDecls, params);
+            const rhs = flattenArrayAccesses(item.slice(eqIdx + 1).trim(), arrayDecls, params);
             if (lhs && rhs) assigns.push({ lhs, rhs });
           }
         }
@@ -1258,6 +1562,7 @@ function parseModules(source: string, warnings: string[]): ParsedModule[] {
       params,
       ports: Array.from(portMap.values()),
       wires,
+      signedNets,
       assigns,
       ffs,
       primitives,
@@ -1277,9 +1582,12 @@ interface SynthContext {
   gates: GateInstance[];
   netPinMap: Map<string, NetEntry>;
   netWidths: Map<string, number>;
+  signedNets: Set<string>;
   params: Map<string, number>;
   bitSplitCache: Map<string, string>;
   rangeSplitCache: Map<string, string>;
+  constCache: Map<string, string>;
+  exprCache: Map<string, string>;
 }
 
 function ensureNetEntry(map: Map<string, NetEntry>, name: string): NetEntry {
@@ -1451,12 +1759,23 @@ function findTopLevelTernary(expr: string): { qIdx: number; cIdx: number } | nul
   return null;
 }
 
-/** Parse a bit-select `sig[idx]` or part-select `sig[hi:lo]` (supports parameter expressions) */
+/** Parse a bit-select `sig[idx]`, part-select `sig[hi:lo]`, or indexed part-select `sig[base -: width]` / `sig[base +: width]` */
 function parseSliceExpr(
   exprRaw: string,
   params: Map<string, number>,
 ): { base: string; hi: number; lo: number } | null {
-  const m = exprRaw.trim().match(/^(\w+)\[\s*([^:\]]+?)(?:\s*:\s*([^\]]+?))?\s*\]$/);
+  const s = exprRaw.trim();
+  const indexed = s.match(/^(\w+)\[\s*([^\]]+?)\s*([+-]):\s*([^\]]+?)\s*\]$/);
+  if (indexed) {
+    const baseIdx = evalParamExpr(indexed[2], params);
+    const width = evalParamExpr(indexed[4], params);
+    if (baseIdx === null || width === null || width <= 0) return null;
+    const hi = indexed[3] === '-' ? baseIdx : baseIdx + width - 1;
+    const lo = indexed[3] === '-' ? baseIdx - width + 1 : baseIdx;
+    if (hi < 0 || lo < 0) return null;
+    return hi >= lo ? { base: indexed[1], hi, lo } : { base: indexed[1], hi: lo, lo: hi };
+  }
+  const m = s.match(/^(\w+)\[\s*([^:\]]+?)(?:\s*:\s*([^\]]+?))?\s*\]$/);
   if (!m) return null;
   const hi = evalParamExpr(m[2], params);
   const lo = m[3] !== undefined ? evalParamExpr(m[3], params) : hi;
@@ -1730,6 +2049,35 @@ function tryBuildMultiMux(expr: string, ctx: SynthContext, bitWidth: number): st
   return outNet;
 }
 
+/** Shared constant CONST gate creator so identical literals (e.g. 1'b0, 1'b1) are deduplicated per module */
+function getOrCreateConstNet(
+  bitWidth: number,
+  val: string,
+  label: string,
+  ctx: SynthContext,
+): string {
+  const canonicalBits = toBinString(fromLiteral(val, bitWidth));
+  const key = `${bitWidth}:${canonicalBits}`;
+  const cached = ctx.constCache.get(key);
+  if (cached) return cached;
+
+  const constGateId = uid('g');
+  ctx.gates.push({
+    id: constGateId,
+    type: 'CONST',
+    x: 0,
+    y: 0,
+    rotation: 0,
+    label,
+    props: { bitWidth, value: val },
+  });
+  const tempNet = `__const_${constGateId}`;
+  addNetDriver(ctx.netPinMap, tempNet, { gateId: constGateId, pinId: 'out' });
+  ctx.netWidths.set(tempNet, bitWidth);
+  ctx.constCache.set(key, tempNet);
+  return tempNet;
+}
+
 /** Synthesize boolean/arithmetic/comparison/ternary/concat/slice expression in `assign` or `always` into gates */
 function buildExprGate(exprRaw: string, ctx: SynthContext, bitWidth: number): string {
   const expr = stripOuterParens(exprRaw);
@@ -1737,61 +2085,35 @@ function buildExprGate(exprRaw: string, ctx: SynthContext, bitWidth: number): st
 
   // Unspecified case fallback -> X constant
   if (expr === '__case_undef__') {
-    const constGateId = uid('g');
-    ctx.gates.push({
-      id: constGateId,
-      type: 'CONST',
-      x: 0,
-      y: 0,
-      rotation: 0,
-      label: `${bitWidth}'bx`,
-      props: { bitWidth, value: `0b${'x'.repeat(bitWidth)}` },
-    });
-    const tempNet = `__const_${constGateId}`;
-    addNetDriver(ctx.netPinMap, tempNet, { gateId: constGateId, pinId: 'out' });
-    ctx.netWidths.set(tempNet, bitWidth);
-    return tempNet;
+    return getOrCreateConstNet(bitWidth, `0b${'x'.repeat(bitWidth)}`, `${bitWidth}'bx`, ctx);
   }
 
   // Constant literal like 1'b0, 4'hA, 1'bx, 1'bz, '0, '1, 0, 1, 42
   const parsedLit = parseVerilogLiteral(expr);
   if (parsedLit) {
-    const constGateId = uid('g');
     const w = parsedLit.width ?? bitWidth;
     const val = parsedLit.fillChar ? `0b${parsedLit.fillChar.repeat(w)}` : parsedLit.value;
-    ctx.gates.push({
-      id: constGateId,
-      type: 'CONST',
-      x: 0,
-      y: 0,
-      rotation: 0,
-      label: expr,
-      props: { bitWidth: w, value: val },
-    });
-    const tempNet = `__const_${constGateId}`;
-    addNetDriver(ctx.netPinMap, tempNet, { gateId: constGateId, pinId: 'out' });
-    ctx.netWidths.set(tempNet, w);
-    return tempNet;
+    return getOrCreateConstNet(w, val, expr, ctx);
   }
 
-  // Parameter constant identifier (e.g. localparam IDLE = 2'd0;)
+  // Parameter constant identifier or compile-time constant expression (e.g. `RATIO - 1`, `STAGES - 1`)
   if (/^\w+$/.test(expr) && ctx.params.has(expr) && !ctx.netWidths.has(expr)) {
     const pVal = ctx.params.get(expr)!;
-    const constGateId = uid('g');
-    ctx.gates.push({
-      id: constGateId,
-      type: 'CONST',
-      x: 0,
-      y: 0,
-      rotation: 0,
-      label: expr,
-      props: { bitWidth, value: String(pVal) },
-    });
-    const tempNet = `__const_${constGateId}`;
-    addNetDriver(ctx.netPinMap, tempNet, { gateId: constGateId, pinId: 'out' });
-    ctx.netWidths.set(tempNet, bitWidth);
-    return tempNet;
+    return getOrCreateConstNet(bitWidth, String(pVal), expr, ctx);
   }
+  const evalConst = evalParamExpr(expr, ctx.params);
+  if (evalConst !== null && !ctx.netWidths.has(expr)) {
+    return getOrCreateConstNet(bitWidth, String(evalConst), String(evalConst), ctx);
+  }
+
+  // Reuse already-synthesized identical pure subexpressions (e.g. shared `opcode[3:2] == 2'b11` comparators!)
+  const exprCacheKey = `${bitWidth}:${expr.replace(/\s+/g, ' ')}`;
+  const cachedExprNet = ctx.exprCache.get(exprCacheKey);
+  if (cachedExprNet) return cachedExprNet;
+  const memo = (net: string): string => {
+    ctx.exprCache.set(exprCacheKey, net);
+    return net;
+  };
 
   // Concatenation / Replication `{a, b, ...}` or `{4{a}}`
   if (hasOuterWrappingBraces(expr)) {
@@ -1801,7 +2123,7 @@ function buildExprGate(exprRaw: string, ctx: SynthContext, bitWidth: number): st
       const widths = lsbFirst.map((item) => inferExprWidth(item, ctx.netWidths, 1, ctx.params));
       const totalW = widths.reduce((a, b) => a + b, 0);
       const srcNets = lsbFirst.map((item, idx) => buildExprGate(item, ctx, widths[idx]));
-      if (srcNets.length === 1) return srcNets[0];
+      if (srcNets.length === 1) return memo(srcNets[0]);
 
       const splId = uid('cat');
       ctx.gates.push({
@@ -1819,14 +2141,14 @@ function buildExprGate(exprRaw: string, ctx: SynthContext, bitWidth: number): st
       const outNet = `__concat_${splId}`;
       addNetDriver(ctx.netPinMap, outNet, { gateId: splId, pinId: 'bus' });
       ctx.netWidths.set(outNet, totalW);
-      return outNet;
+      return memo(outNet);
     }
   }
 
-  // Bit-select or part-select `sig[idx]` / `sig[hi:lo]` -> synthesize SPLITTER!
+  // Bit-select or part-select `sig[idx]` / `sig[hi:lo]` / `sig[base -: w]` -> synthesize SPLITTER!
   const slice = parseSliceExpr(expr, ctx.params);
   if (slice) {
-    return synthesizeSlice(slice.base, slice.hi, slice.lo, ctx);
+    return memo(synthesizeSlice(slice.base, slice.hi, slice.lo, ctx));
   }
 
   // Simple net identifier
@@ -1836,16 +2158,54 @@ function buildExprGate(exprRaw: string, ctx: SynthContext, bitWidth: number): st
 
   // 1a. Multi-input MUX detection (chained `(sel == k) ? ...` or synthesized `case`)
   const multiMuxNet = tryBuildMultiMux(expr, ctx, bitWidth);
-  if (multiMuxNet) return multiMuxNet;
+  if (multiMuxNet) return memo(multiMuxNet);
 
-  // 1b. Standard 2:1 Ternary MUX / Tri-state Buffer
+  // 1b. Standard 2:1 Ternary MUX / Tri-state Buffer (with clean 1-bit constant boolean simplification)
   const tern = findTopLevelTernary(expr);
   if (tern) {
-    const condPart = expr.slice(0, tern.qIdx).trim();
-    const truePart = expr.slice(tern.qIdx + 1, tern.cIdx).trim();
-    const falsePart = expr.slice(tern.cIdx + 1).trim();
+    const condPart = stripOuterParens(expr.slice(0, tern.qIdx));
+    const truePart = stripOuterParens(expr.slice(tern.qIdx + 1, tern.cIdx));
+    const falsePart = stripOuterParens(expr.slice(tern.cIdx + 1));
+
+    if (truePart === falsePart) {
+      return memo(buildExprGate(truePart, ctx, bitWidth));
+    }
 
     const isZLit = (s: string) => /^(?:\d+)?'s?bz+$|^'z$/i.test(stripOuterParens(s));
+    const isBit0Lit = (s: string) => {
+      const l = parseVerilogLiteral(stripOuterParens(s));
+      return Boolean(
+        l && (l.fillChar === '0' || l.value === '0' || l.value === '0b0' || l.value === '0x0'),
+      );
+    };
+    const isBit1Lit = (s: string) => {
+      const l = parseVerilogLiteral(stripOuterParens(s));
+      return Boolean(
+        l && (l.fillChar === '1' || l.value === '1' || l.value === '0b1' || l.value === '0x1'),
+      );
+    };
+
+    // Simple 1-bit boolean simplifications (dramatically cuts redundant 1'b0/1'b1 MUX chains!)
+    if (bitWidth === 1 && !isZLit(truePart) && !isZLit(falsePart)) {
+      if (isBit1Lit(truePart) && isBit0Lit(falsePart)) {
+        return memo(buildExprGate(condPart, ctx, 1));
+      }
+      if (isBit0Lit(truePart) && isBit1Lit(falsePart)) {
+        return memo(buildExprGate(`~(${condPart})`, ctx, 1));
+      }
+      if (isBit0Lit(falsePart)) {
+        return memo(buildExprGate(`(${condPart}) & (${truePart})`, ctx, 1));
+      }
+      if (isBit0Lit(truePart)) {
+        return memo(buildExprGate(`(~(${condPart})) & (${falsePart})`, ctx, 1));
+      }
+      if (isBit1Lit(truePart)) {
+        return memo(buildExprGate(`(${condPart}) | (${falsePart})`, ctx, 1));
+      }
+      if (isBit1Lit(falsePart)) {
+        return memo(buildExprGate(`(~(${condPart})) | (${truePart})`, ctx, 1));
+      }
+    }
 
     // Special case: tri-state buffer idiom `en ? data : 1'bz`
     if (isZLit(falsePart)) {
@@ -1866,7 +2226,7 @@ function buildExprGate(exprRaw: string, ctx: SynthContext, bitWidth: number): st
       const outNet = `__tri_${gid}`;
       addNetDriver(ctx.netPinMap, outNet, { gateId: gid, pinId: 'out' });
       ctx.netWidths.set(outNet, bitWidth);
-      return outNet;
+      return memo(outNet);
     }
     // Active-low tri-state idiom `en_n ? 1'bz : data`
     if (isZLit(truePart)) {
@@ -1887,12 +2247,14 @@ function buildExprGate(exprRaw: string, ctx: SynthContext, bitWidth: number): st
       const outNet = `__tri_${gid}`;
       addNetDriver(ctx.netPinMap, outNet, { gateId: gid, pinId: 'out' });
       ctx.netWidths.set(outNet, bitWidth);
-      return outNet;
+      return memo(outNet);
     }
 
     const selNet = buildExprGate(condPart, ctx, 1);
-    const trueNet = buildExprGate(truePart, ctx, bitWidth);
-    const falseNet = buildExprGate(falsePart, ctx, bitWidth);
+    const trueRaw = buildExprGate(truePart, ctx, bitWidth);
+    const falseRaw = buildExprGate(falsePart, ctx, bitWidth);
+    const trueNet = extendNet(trueRaw, ctx.netWidths.get(trueRaw) ?? bitWidth, bitWidth, ctx);
+    const falseNet = extendNet(falseRaw, ctx.netWidths.get(falseRaw) ?? bitWidth, bitWidth, ctx);
     const gid = uid('g');
     ctx.gates.push({
       id: gid,
@@ -1909,7 +2271,7 @@ function buildExprGate(exprRaw: string, ctx: SynthContext, bitWidth: number): st
     const outNet = `__mux_${gid}`;
     addNetDriver(ctx.netPinMap, outNet, { gateId: gid, pinId: 'out' });
     ctx.netWidths.set(outNet, bitWidth);
-    return outNet;
+    return memo(outNet);
   }
 
   // 2. Binary operators ordered from lowest to highest Verilog precedence
@@ -1952,10 +2314,27 @@ function buildExprGate(exprRaw: string, ctx: SynthContext, bitWidth: number): st
         const leftW = inferExprWidth(lhsStr, ctx.netWidths, 1, ctx.params);
         const rightW = inferExprWidth(rhsStr, ctx.netWidths, 1, ctx.params);
         const cmpW = Math.max(leftW, rightW);
+        // Simplify trivial 1-bit equality checks: `sig == 1'b1` -> `sig`, `sig == 1'b0` -> `~sig`
+        if (cmpW === 1 && (lvl.kind === 'EQ' || lvl.kind === 'NEQ')) {
+          const rLit = parseVerilogLiteral(stripOuterParens(rhsStr));
+          const lLit = parseVerilogLiteral(stripOuterParens(lhsStr));
+          const isZero = (l: ReturnType<typeof parseVerilogLiteral>) =>
+            Boolean(l && (l.fillChar === '0' || l.value === '0' || l.value === '0b0'));
+          const isOne = (l: ReturnType<typeof parseVerilogLiteral>) =>
+            Boolean(l && (l.fillChar === '1' || l.value === '1' || l.value === '0b1'));
+          if (rLit && (isZero(rLit) || isOne(rLit))) {
+            const wantInv = (lvl.kind === 'EQ') === isZero(rLit);
+            return memo(buildExprGate(wantInv ? `~(${lhsStr})` : lhsStr, ctx, 1));
+          }
+          if (lLit && (isZero(lLit) || isOne(lLit))) {
+            const wantInv = (lvl.kind === 'EQ') === isZero(lLit);
+            return memo(buildExprGate(wantInv ? `~(${rhsStr})` : rhsStr, ctx, 1));
+          }
+        }
         const leftRaw = buildExprGate(lhsStr, ctx, cmpW);
         const rightRaw = buildExprGate(rhsStr, ctx, cmpW);
-        const leftNet = zeroExtendNet(leftRaw, ctx.netWidths.get(leftRaw) ?? cmpW, cmpW, ctx);
-        const rightNet = zeroExtendNet(rightRaw, ctx.netWidths.get(rightRaw) ?? cmpW, cmpW, ctx);
+        const leftNet = extendNet(leftRaw, ctx.netWidths.get(leftRaw) ?? cmpW, cmpW, ctx);
+        const rightNet = extendNet(rightRaw, ctx.netWidths.get(rightRaw) ?? cmpW, cmpW, ctx);
         const cmpId = uid('g');
         ctx.gates.push({
           id: cmpId,
@@ -1987,14 +2366,14 @@ function buildExprGate(exprRaw: string, ctx: SynthContext, bitWidth: number): st
           const outNet = `__cmp_inv_${notId}`;
           addNetDriver(ctx.netPinMap, outNet, { gateId: notId, pinId: 'out' });
           ctx.netWidths.set(outNet, 1);
-          return outNet;
+          return memo(outNet);
         }
 
         const pinId = lvl.kind === 'EQ' ? 'eq' : lvl.kind === 'LT' ? 'lt' : 'gt';
         const outNet = `__cmp_${cmpId}_${pinId}`;
         addNetDriver(ctx.netPinMap, outNet, { gateId: cmpId, pinId });
         ctx.netWidths.set(outNet, 1);
-        return outNet;
+        return memo(outNet);
       }
 
       if (lvl.kind === 'SUB') {
@@ -2151,7 +2530,7 @@ function buildExprGate(exprRaw: string, ctx: SynthContext, bitWidth: number): st
       const outNet = `__op_${gid}`;
       addNetDriver(ctx.netPinMap, outNet, { gateId: gid, pinId: 'out' });
       ctx.netWidths.set(outNet, bitWidth);
-      return outNet;
+      return memo(outNet);
     }
   }
 
@@ -2173,7 +2552,7 @@ function buildExprGate(exprRaw: string, ctx: SynthContext, bitWidth: number): st
     };
     const isNeg = op.startsWith('~') || op === '^~';
     if (opW <= 1) {
-      if (!isNeg) return opNet;
+      if (!isNeg) return memo(opNet);
       const notId = uid('g');
       ctx.gates.push({
         id: notId,
@@ -2188,7 +2567,7 @@ function buildExprGate(exprRaw: string, ctx: SynthContext, bitWidth: number): st
       const outNet = `__red_${notId}`;
       addNetDriver(ctx.netPinMap, outNet, { gateId: notId, pinId: 'out' });
       ctx.netWidths.set(outNet, 1);
-      return outNet;
+      return memo(outNet);
     }
     const clampedW = Math.min(8, opW);
     const gid = uid('g');
@@ -2208,7 +2587,7 @@ function buildExprGate(exprRaw: string, ctx: SynthContext, bitWidth: number): st
     const outNet = `__red_${gid}`;
     addNetDriver(ctx.netPinMap, outNet, { gateId: gid, pinId: 'out' });
     ctx.netWidths.set(outNet, 1);
-    return outNet;
+    return memo(outNet);
   }
 
   // 3b. Unary NOT (~ or !)
@@ -2218,7 +2597,7 @@ function buildExprGate(exprRaw: string, ctx: SynthContext, bitWidth: number): st
     const innerW = isLogicalNot ? inferExprWidth(innerStr, ctx.netWidths, 1, ctx.params) : bitWidth;
     if (isLogicalNot && innerW > 1) {
       // Logical !bus is equivalent to reduction NOR `~|bus`
-      return buildExprGate(`~|(${innerStr})`, ctx, 1);
+      return memo(buildExprGate(`~|(${innerStr})`, ctx, 1));
     }
     const innerNet = buildExprGate(innerStr, ctx, bitWidth);
     const gid = uid('g');
@@ -2235,29 +2614,17 @@ function buildExprGate(exprRaw: string, ctx: SynthContext, bitWidth: number): st
     const outNet = `__not_${gid}`;
     addNetDriver(ctx.netPinMap, outNet, { gateId: gid, pinId: 'out' });
     ctx.netWidths.set(outNet, bitWidth);
-    return outNet;
+    return memo(outNet);
   }
 
   return expr;
 }
 
-/** Zero-extend a narrower net to `targetW` bits using a CONST 0 + merge SPLITTER so upper bits never float as Z */
+/** Zero-extend a narrower net to `targetW` bits using a shared CONST 0 + merge SPLITTER */
 function zeroExtendNet(net: string, curW: number, targetW: number, ctx: SynthContext): string {
   if (curW >= targetW || curW <= 0) return net;
   const padW = targetW - curW;
-  const zeroGateId = uid('g');
-  ctx.gates.push({
-    id: zeroGateId,
-    type: 'CONST',
-    x: 0,
-    y: 0,
-    rotation: 0,
-    label: `${padW}'b0`,
-    props: { bitWidth: padW, value: '0' },
-  });
-  const zeroNet = `__zext0_${zeroGateId}`;
-  addNetDriver(ctx.netPinMap, zeroNet, { gateId: zeroGateId, pinId: 'out' });
-  ctx.netWidths.set(zeroNet, padW);
+  const zeroNet = getOrCreateConstNet(padW, '0', `${padW}'b0`, ctx);
 
   const splId = uid('zext');
   ctx.gates.push({
@@ -2274,6 +2641,72 @@ function zeroExtendNet(net: string, curW: number, targetW: number, ctx: SynthCon
   const outNet = `__zext_${splId}`;
   addNetDriver(ctx.netPinMap, outNet, { gateId: splId, pinId: 'bus' });
   ctx.netWidths.set(outNet, targetW);
+  return outNet;
+}
+
+/** Sign-extend (for `signed` nets) or zero-extend a narrower net to `targetW` bits so upper bits never float as Z */
+function extendNet(net: string, curW: number, targetW: number, ctx: SynthContext): string {
+  if (curW >= targetW || curW <= 0) return net;
+  if (!ctx.signedNets.has(net)) {
+    return zeroExtendNet(net, curW, targetW, ctx);
+  }
+  const padW = targetW - curW;
+  const signBitNet = curW === 1 ? net : synthesizeSlice(net, curW - 1, curW - 1, ctx);
+  // Replicate MSB via merge SPLITTER(s) (chunked if padW is large so pin count stays tidy)
+  let extBitsNet = signBitNet;
+  let extW = 1;
+  while (extW < padW) {
+    const step = Math.min(8, Math.ceil(padW / extW));
+    const widths: number[] = [];
+    const srcs: string[] = [];
+    let acc = 0;
+    for (let k = 0; k < step && acc < padW; k++) {
+      const w = Math.min(extW, padW - acc);
+      if (w === extW) {
+        widths.push(extW);
+        srcs.push(extBitsNet);
+        acc += extW;
+      } else {
+        const tail = synthesizeSlice(extBitsNet, w - 1, 0, ctx);
+        widths.push(w);
+        srcs.push(tail);
+        acc += w;
+      }
+    }
+    const repId = uid('srep');
+    ctx.gates.push({
+      id: repId,
+      type: 'SPLITTER',
+      x: 0,
+      y: 0,
+      rotation: 0,
+      label: 'SEXT',
+      props: { splitMode: 'merge', splitWidths: widths, bitWidth: acc },
+    });
+    srcs.forEach((s, idx) => addNetSink(ctx.netPinMap, s, { gateId: repId, pinId: `b${idx}` }));
+    const nextNet = `__srep_${repId}`;
+    addNetDriver(ctx.netPinMap, nextNet, { gateId: repId, pinId: 'bus' });
+    ctx.netWidths.set(nextNet, acc);
+    extBitsNet = nextNet;
+    extW = acc;
+  }
+
+  const splId = uid('sext');
+  ctx.gates.push({
+    id: splId,
+    type: 'SPLITTER',
+    x: 0,
+    y: 0,
+    rotation: 0,
+    label: 'SEXT',
+    props: { splitMode: 'merge', splitWidths: [curW, padW], bitWidth: targetW },
+  });
+  addNetSink(ctx.netPinMap, net, { gateId: splId, pinId: 'b0' });
+  addNetSink(ctx.netPinMap, extBitsNet, { gateId: splId, pinId: 'b1' });
+  const outNet = `__sext_${splId}`;
+  addNetDriver(ctx.netPinMap, outNet, { gateId: splId, pinId: 'bus' });
+  ctx.netWidths.set(outNet, targetW);
+  ctx.signedNets.add(outNet);
   return outNet;
 }
 
@@ -2478,6 +2911,82 @@ function autoLayoutGates(
   const outLayer = maxInternalLayer + 1;
   for (const g of gates) {
     if (g.type === 'MODULE_OUT') layer.set(g.id, outLayer);
+  }
+
+  // 3b. Right-pull (ALAP) pass for output-driving components:
+  // Components feeding MODULE_OUT (especially those with many or exclusive MODULE_OUT connections)
+  // are placed right next to MODULE_OUT (`outLayer - 1`) on the right side of the canvas!
+  if (outLayer >= 3) {
+    const outDirectCount = new Map<string, number>();
+    const nonOutDirectCount = new Map<string, number>();
+    for (const [, entry] of netPinMap.entries()) {
+      let outSinks = 0;
+      let otherSinks = 0;
+      for (const s of entry.sinks) {
+        const sg = gateById.get(s.gateId);
+        if (!sg) continue;
+        if (sg.type === 'MODULE_OUT') outSinks++;
+        else otherSinks++;
+      }
+      if (outSinks === 0 && otherSinks === 0) continue;
+      for (const d of entry.drivers) {
+        if (outSinks > 0) {
+          outDirectCount.set(d.gateId, (outDirectCount.get(d.gateId) ?? 0) + outSinks);
+        }
+        if (otherSinks > 0) {
+          nonOutDirectCount.set(d.gateId, (nonOutDirectCount.get(d.gateId) ?? 0) + otherSinks);
+        }
+      }
+    }
+
+    // Pass 1: Move components whose outputs predominantly or exclusively drive MODULE_OUT to `outLayer - 1`
+    for (const g of gates) {
+      if (g.type === 'MODULE_IN' || g.type === 'CONST' || g.type === 'MODULE_OUT') continue;
+      const outCnt = outDirectCount.get(g.id) ?? 0;
+      if (outCnt === 0) continue;
+      const succs = dataSuccs.get(g.id);
+      let minInternalSuccLayer = outLayer;
+      let internalSuccCnt = 0;
+      if (succs) {
+        for (const sid of succs) {
+          if (gateById.get(sid)?.type === 'MODULE_OUT') continue;
+          internalSuccCnt++;
+          minInternalSuccLayer = Math.min(minInternalSuccLayer, layer.get(sid) ?? outLayer);
+        }
+      }
+      const curL = layer.get(g.id) ?? 1;
+      const otherCnt = Math.max(internalSuccCnt, nonOutDirectCount.get(g.id) ?? 0);
+      if (internalSuccCnt === 0) {
+        // Feeds only MODULE_OUT -> pull directly adjacent to MODULE_OUT!
+        layer.set(g.id, outLayer - 1);
+      } else if (outCnt > otherCnt) {
+        // Predominantly feeds MODULE_OUT (more OUT pins than internal fanout) -> prioritize proximity to OUT!
+        layer.set(g.id, outLayer - 1);
+      } else if (minInternalSuccLayer - 1 > curL) {
+        // Otherwise pull as far right as possible without reversing forward edges
+        layer.set(g.id, minInternalSuccLayer - 1);
+      }
+    }
+
+    // Pass 2: Pull immediate upstream gates that only feed right-pulled gates closer to their consumers (clean ALAP)
+    for (let pass = 0; pass < 3; pass++) {
+      let shifted = false;
+      for (const g of gates) {
+        if (g.type === 'MODULE_IN' || g.type === 'CONST' || g.type === 'MODULE_OUT') continue;
+        const succs = dataSuccs.get(g.id);
+        if (!succs || succs.size === 0) continue;
+        let minSuccLayer = Infinity;
+        for (const sid of succs) {
+          minSuccLayer = Math.min(minSuccLayer, layer.get(sid) ?? outLayer);
+        }
+        const curL = layer.get(g.id) ?? 1;
+        if (Number.isFinite(minSuccLayer) && minSuccLayer - 1 > curL && minSuccLayer < outLayer) {
+          layer.set(g.id, minSuccLayer - 1);
+          shifted = true;
+        }
+      }
+      if (!shifted) break;
+    }
   }
 
   // Group gates into columns
@@ -3070,9 +3579,12 @@ export function importVerilogFilesToCircuits(
       gates,
       netPinMap,
       netWidths,
+      signedNets: pm.signedNets,
       params: pm.params,
       bitSplitCache: new Map(),
       rangeSplitCache: new Map(),
+      constCache: new Map(),
+      exprCache: new Map(),
     };
 
     for (const g of gates) {
@@ -3086,16 +3598,18 @@ export function importVerilogFilesToCircuits(
     const lhsSliceAssigns = new Map<string, { lo: number; hi: number; srcNet: string }[]>();
     const pendingAliases: { src: string; dst: string; bw: number }[] = [];
 
-    const connectToLhsTarget = (lhsRaw: string, srcNet: string, bw: number) => {
+    const connectToLhsTarget = (lhsRaw: string, srcNetRaw: string, bw: number) => {
       const lhs = lhsRaw.trim();
       const slice = parseSliceExpr(lhs, pm.params);
       if (slice) {
         const list = lhsSliceAssigns.get(slice.base) ?? [];
-        list.push({ lo: slice.lo, hi: slice.hi, srcNet });
+        list.push({ lo: slice.lo, hi: slice.hi, srcNet: srcNetRaw });
         lhsSliceAssigns.set(slice.base, list);
         return;
       }
-      if (srcNet === lhs) return;
+      if (srcNetRaw === lhs) return;
+      const srcW = netWidths.get(srcNetRaw) ?? bw;
+      const srcNet = srcW < bw ? extendNet(srcNetRaw, srcW, bw, ctx) : srcNetRaw;
       const srcEntry = ensureNetEntry(netPinMap, srcNet);
       if (srcNet.startsWith('__') && srcEntry.drivers.length > 0) {
         for (const drv of srcEntry.drivers) {
@@ -3211,7 +3725,8 @@ export function importVerilogFilesToCircuits(
       // Clock
       addNetSink(netPinMap, ff.clkNet, { gateId: ffId, pinId: 'clk' });
       // Data input D (may reference ff.target itself, e.g. cnt <= cnt + 1!)
-      const dNet = buildExprGate(ff.dExpr, ctx, bw);
+      const dRaw = buildExprGate(ff.dExpr, ctx, bw);
+      const dNet = extendNet(dRaw, ctx.netWidths.get(dRaw) ?? bw, bw, ctx);
       addNetSink(netPinMap, dNet, { gateId: ffId, pinId: 'd' });
 
       // Optional Enable

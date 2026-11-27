@@ -880,8 +880,8 @@ endmodule`;
     expect(maxFbY).toBeGreaterThan(layoutBottomY);
   });
 
-  it('14. real-world TD4 CPU (docs/test_hdl): infers td4_cpu as top over unused rom_16x8 and routes/simulates fast', () => {
-    const hdlDir = join(process.cwd(), 'docs', 'test_hdl');
+  it('14. real-world TD4 CPU (docs/test_hdl/td4): infers td4_cpu as top over unused rom_16x8 and routes/simulates fast', () => {
+    const hdlDir = join(process.cwd(), 'docs', 'test_hdl', 'td4');
     const fileNames = readdirSync(hdlDir)
       .filter((f) => f.endsWith('.sv') || f.endsWith('.v'))
       .sort(); // alphabetical order puts rom_16x8bit.sv BEFORE td4_cpu.sv!
@@ -1030,7 +1030,7 @@ endmodule`;
 
   it('16. synthesizes carryless HDL adders without floating Z Cin pins (including 5-bit carry-capture alu.sv) and avoids unnecessary CLK/RST detours', () => {
     // 1. Real-world alu.sv: `logic [4:0] sum_temp = mux_out + Im;` (4-bit + 4-bit -> 5-bit with carry)
-    const aluSrc = readFileSync(join(process.cwd(), 'docs', 'test_hdl', 'alu.sv'), 'utf-8');
+    const aluSrc = readFileSync(join(process.cwd(), 'docs', 'test_hdl', 'td4', 'alu.sv'), 'utf-8');
     const aluRes = importVerilogToCircuits(aluSrc);
     const aluTop = aluRes.circuits.find((c) => c.id === aluRes.topCircuitId)!;
     const aluAdders = aluTop.gates.filter((g) => g.type === 'ADDER');
@@ -1153,7 +1153,7 @@ endmodule`;
 
   it('17. omits floating EN pins on HDL-synthesized D_FF/REGISTER without enable condition and keeps EN when guarded by if(en)', () => {
     // 1. alu.sv: D_FF (`carry_f`) has no enable condition -> hasEnable=false, no `en` pin
-    const aluSrc = readFileSync(join(process.cwd(), 'docs', 'test_hdl', 'alu.sv'), 'utf-8');
+    const aluSrc = readFileSync(join(process.cwd(), 'docs', 'test_hdl', 'td4', 'alu.sv'), 'utf-8');
     const aluRes = importVerilogToCircuits(aluSrc);
     const aluTop = aluRes.circuits.find((c) => c.id === aluRes.topCircuitId)!;
     const dff = aluTop.gates.find((g) => g.type === 'D_FF')!;
@@ -1162,7 +1162,10 @@ endmodule`;
     expect(getGatePins(dff).some((p) => p.id === 'en')).toBe(false);
 
     // 2. pc_4bit.sv: REGISTER (`pc_out`) uses `if (pc_we) ... else ...` (always updates on clk) -> hasEnable=false, no `en` pin
-    const pcSrc = readFileSync(join(process.cwd(), 'docs', 'test_hdl', 'pc_4bit.sv'), 'utf-8');
+    const pcSrc = readFileSync(
+      join(process.cwd(), 'docs', 'test_hdl', 'td4', 'pc_4bit.sv'),
+      'utf-8',
+    );
     const pcRes = importVerilogToCircuits(pcSrc);
     const pcTop = pcRes.circuits.find((c) => c.id === pcRes.topCircuitId)!;
     const pcReg = pcTop.gates.find((g) => g.type === 'REGISTER')!;
@@ -1204,7 +1207,7 @@ endmodule`;
 
     // 3. register_4bit.sv: REGISTER (`data_out`) has `if (we)` -> hasEnable=true, exposes `en` pin and honors we=0/1
     const regSrc = readFileSync(
-      join(process.cwd(), 'docs', 'test_hdl', 'register_4bit.sv'),
+      join(process.cwd(), 'docs', 'test_hdl', 'td4', 'register_4bit.sv'),
       'utf-8',
     );
     const regRes = importVerilogToCircuits(regSrc);
@@ -1244,5 +1247,169 @@ endmodule`;
       data_in: fromInt(0xa, 4),
     });
     expect(toUnsignedInt(loaded.data_out)).toBe(0xa);
+  });
+
+  it('18. synthesizes docs/test_hdl/td4/instruction_decoder.sv accurately with connected carry_f, deduplicated CONSTs, and no backward CONST wires', () => {
+    const src = readFileSync(
+      join(process.cwd(), 'docs', 'test_hdl', 'td4', 'instruction_decoder.sv'),
+      'utf-8',
+    );
+    const res = importVerilogToCircuits(src);
+    const top = res.circuits.find((c) => c.id === res.topCircuitId)!;
+
+    // 1. carry_f input MUST be wired (used by JEC/JNC branches inside case)!
+    const carryIn = top.gates.find((g) => g.type === 'MODULE_IN' && g.label === 'carry_f')!;
+    expect(carryIn).toBeDefined();
+    expect(top.wires.some((w) => w.from?.gateId === carryIn.id)).toBe(true);
+
+    // 2. Identical CONST gates (1'b0, 1'b1, 2'b11, ...) MUST be deduplicated cleanly!
+    const constGates = top.gates.filter((g) => g.type === 'CONST');
+    expect(constGates.length).toBeLessThanOrEqual(8);
+
+    // 3. No wire leaving a CONST gate may cut backward through the gate's left side!
+    const constById = new Map(constGates.map((g) => [g.id, g]));
+    for (const w of top.wires) {
+      if (w.from && constById.has(w.from.gateId)) {
+        const cg = constById.get(w.from.gateId)!;
+        const minX = Math.min(...w.points.map((p) => p.x));
+        expect(minX).toBeGreaterThanOrEqual(cg.x);
+      }
+    }
+
+    // 4. Exhaustive truth-table verification for every (opcode, carry_f) combination!
+    const proj = makeProj(res.circuits, top.id);
+    for (let op = 0; op < 16; op++) {
+      for (const cf of [0, 1]) {
+        const imm = 0b1010;
+        const instr = (op << 4) | imm;
+        const out = evalSeq(proj, top.id, createEmptySequentialState(), {
+          instruction: fromInt(instr, 8),
+          carry_f: fromInt(cf, 1),
+        });
+        expect(toUnsignedInt(out.Im)).toBe(imm);
+
+        const hi = (op >> 2) & 0b11;
+        const lo = op & 0b11;
+        const expClkStop = hi === 3 && lo === 0 ? 1 : 0;
+        const expPcWe =
+          hi === 3 && ((lo === 1 && cf === 1) || (lo === 2 && cf === 0) || lo === 3) ? 1 : 0;
+        const expAWe = hi === 0 ? 1 : 0;
+        const expBWe = hi === 1 ? 1 : 0;
+        const expOutWe = hi === 2 ? 1 : 0;
+        const expASel = hi !== 3 && lo === 0 ? 1 : 0;
+        const expBSel = hi !== 3 && lo === 1 ? 1 : 0;
+        const expInSel = hi !== 3 && lo === 2 ? 1 : 0;
+        const expZSel = hi !== 3 && lo === 3 ? 1 : 0;
+
+        expect(out.clk_stop.bits[0]).toBe(expClkStop ? BIT_1 : BIT_0);
+        expect(out.PC_we.bits[0]).toBe(expPcWe ? BIT_1 : BIT_0);
+        expect(out.A_we.bits[0]).toBe(expAWe ? BIT_1 : BIT_0);
+        expect(out.B_we.bits[0]).toBe(expBWe ? BIT_1 : BIT_0);
+        expect(out.OUT_we.bits[0]).toBe(expOutWe ? BIT_1 : BIT_0);
+        expect(out.A_sel.bits[0]).toBe(expASel ? BIT_1 : BIT_0);
+        expect(out.B_sel.bits[0]).toBe(expBSel ? BIT_1 : BIT_0);
+        expect(out.IN_sel.bits[0]).toBe(expInSel ? BIT_1 : BIT_0);
+        expect(out.Z_sel.bits[0]).toBe(expZSel ? BIT_1 : BIT_0);
+      }
+    }
+  });
+
+  it('19. synthesizes complex SystemVerilog always_ff with $clog2, for-loops, 1D/2D arrays, and indexed part-select (docs/test_hdl/fm/cic_decimator.sv)', () => {
+    const src = readFileSync(
+      join(process.cwd(), 'docs', 'test_hdl', 'fm', 'cic_decimator.sv'),
+      'utf-8',
+    );
+    const res = importVerilogToCircuits(src);
+    const top = res.circuits.find((c) => c.id === res.topCircuitId)!;
+
+    // Must synthesize all integrator, comb, delay, counter, and strobe registers (not just I/O ports!)
+    const regs = top.gates.filter((g) => g.type === 'REGISTER' || g.type === 'D_FF');
+    // 4 integ_reg + 4 comb_reg + 4 comb_delay_reg + decim_counter + decim_strobe + comb_valid_counter + output_data_valid = 16
+    expect(regs.length).toBeGreaterThanOrEqual(16);
+    expect(top.gates.some((g) => g.type === 'ADDER')).toBe(true);
+    expect(top.wires.length).toBeGreaterThan(20);
+
+    // Simulate a fast small-parameter CIC (STAGES=2, RATIO=2, DELAY=1, INPUT_WIDTH=4, OUTPUT_WIDTH=6) to verify exact RTL behavior!
+    const smallCic = src
+      .replace(/STAGES\s*=\s*4/, 'STAGES = 2')
+      .replace(/RATIO\s*=\s*128/, 'RATIO = 2')
+      .replace(/INPUT_WIDTH\s*=\s*16/, 'INPUT_WIDTH = 4')
+      .replace(/OUTPUT_WIDTH\s*=\s*25/, 'OUTPUT_WIDTH = 6');
+    const smallRes = importVerilogToCircuits(smallCic);
+    const smallTop = smallRes.circuits.find((c) => c.id === smallRes.topCircuitId)!;
+    const proj = makeProj(smallRes.circuits, smallTop.id);
+    const seq = createEmptySequentialState();
+
+    // Reset pulse
+    evalSeq(proj, smallTop.id, seq, {
+      clock: fromInt(0, 1),
+      reset_n: fromInt(0, 1),
+      input_data: fromInt(1, 4),
+      input_data_valid: fromInt(0, 1),
+    });
+    evalSeq(proj, smallTop.id, seq, {
+      clock: fromInt(1, 1),
+      reset_n: fromInt(0, 1),
+      input_data: fromInt(1, 4),
+      input_data_valid: fromInt(0, 1),
+    });
+
+    // Feed constant DC = +1 with valid=1 for 8 clock cycles; output_data_valid must assert with valid non-X output_data!
+    let sawValid = false;
+    let lastValidData: number | null = null;
+    for (let cyc = 0; cyc < 8; cyc++) {
+      evalSeq(proj, smallTop.id, seq, {
+        clock: fromInt(0, 1),
+        reset_n: fromInt(1, 1),
+        input_data: fromInt(1, 4),
+        input_data_valid: fromInt(1, 1),
+      });
+      const out = evalSeq(proj, smallTop.id, seq, {
+        clock: fromInt(1, 1),
+        reset_n: fromInt(1, 1),
+        input_data: fromInt(1, 4),
+        input_data_valid: fromInt(1, 1),
+      });
+      if (out.output_data_valid.bits[0] === BIT_1) {
+        sawValid = true;
+        lastValidData = toUnsignedInt(out.output_data);
+      }
+    }
+    expect(sawValid).toBe(true);
+    // Steady-state DC gain of 2-stage CIC with RATIO=2, DELAY=1 is R^N = 2^2 = 4 (input=1 -> output=4)
+    expect(lastValidData).toBe(4);
+  });
+
+  it('20. places components heavily driving MODULE_OUT right next to MODULE_OUT on the right side of the canvas', () => {
+    const src = `
+      module out_right_pull (
+        input  logic [3:0] a,
+        input  logic [3:0] b,
+        output logic [3:0] y_deep,
+        output logic [3:0] y_direct
+      );
+        logic [3:0] s1, s2;
+        assign s1 = a ^ b;
+        assign s2 = ~s1;
+        assign y_deep = s2 & a;
+        // Single-stage gate driving MODULE_OUT directly should still be placed right beside MODULE_OUT!
+        assign y_direct = a | b;
+      endmodule
+    `;
+    const res = importVerilogToCircuits(src);
+    const top = res.circuits.find((c) => c.id === res.topCircuitId)!;
+
+    const orGate = top.gates.find((g) => g.type === 'OR')!;
+    const andGate = top.gates.find((g) => g.type === 'AND')!;
+    const xorGate = top.gates.find((g) => g.type === 'XOR')!;
+    const outDirect = top.gates.find((g) => g.type === 'MODULE_OUT' && g.label === 'y_direct')!;
+
+    expect(orGate).toBeDefined();
+    expect(andGate).toBeDefined();
+    expect(xorGate).toBeDefined();
+    // OR drives MODULE_OUT directly -> aligned right next to MODULE_OUT at the same rightmost internal column as AND!
+    expect(orGate.x).toBe(andGate.x);
+    expect(orGate.x).toBeGreaterThan(xorGate.x);
+    expect(orGate.x).toBeLessThan(outDirect.x);
   });
 });

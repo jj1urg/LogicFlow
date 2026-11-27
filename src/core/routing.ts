@@ -135,8 +135,19 @@ export function routeWire(
   blockedCells.delete(`${gx1},${gy1}`);
 
   const margin = 8;
-  const minGx = Math.min(gx0, gx1) - margin;
-  const maxGx = Math.max(gx0, gx1) + margin;
+  // Prevent forward A* routes from looping backward behind right-facing source pins or past left-facing target pins!
+  const minGx =
+    startSide === 'right' && gx1 >= gx0
+      ? gx0
+      : endSide === 'right' && gx1 <= gx0
+        ? gx1
+        : Math.min(gx0, gx1) - margin;
+  const maxGx =
+    endSide === 'left' && gx1 >= gx0
+      ? gx1
+      : startSide === 'left' && gx1 <= gx0
+        ? gx0
+        : Math.max(gx0, gx1) + margin;
   const minGy = Math.min(Math.min(gy0, gy1) - margin, obsMinGy - 3);
   const maxGy = Math.max(Math.max(gy0, gy1) + margin, obsMaxGy + 3);
 
@@ -175,6 +186,8 @@ export function routeWire(
     yA: number,
     yB: number,
     preferDir: -1 | 0 | 1 = 0,
+    restrictDir: -1 | 0 | 1 = 0,
+    horizY?: number,
   ): number => {
     const yMin = Math.min(yA, yB);
     const yMax = Math.max(yA, yB);
@@ -184,6 +197,13 @@ export function routeWire(
         if (y < yMax && usedSegments.has(segKey(cx, y, cx, y + 1))) cost += 100;
         if (blockedCells.has(`${cx},${y}`)) cost += 250;
       }
+      if (horizY !== undefined && cx !== baseGx) {
+        const hxMin = Math.min(baseGx, cx);
+        const hxMax = Math.max(baseGx, cx);
+        for (let x = hxMin; x <= hxMax; x++) {
+          if (x !== baseGx && blockedCells.has(`${x},${horizY}`)) cost += 500;
+        }
+      }
       return cost;
     };
     let bestGx = baseGx;
@@ -191,11 +211,13 @@ export function routeWire(
     if (bestCost === 0) return bestGx * g;
     for (let offset = 1; offset <= 16; offset++) {
       const cands =
-        preferDir > 0
-          ? [baseGx + offset, baseGx - offset]
-          : preferDir < 0
-            ? [baseGx - offset, baseGx + offset]
-            : [baseGx - offset, baseGx + offset];
+        restrictDir > 0
+          ? [baseGx + offset]
+          : restrictDir < 0
+            ? [baseGx - offset]
+            : preferDir > 0
+              ? [baseGx + offset, baseGx - offset]
+              : [baseGx - offset, baseGx + offset];
       for (const cand of cands) {
         const c = scoreX(cand);
         if (c < bestCost) {
@@ -247,8 +269,9 @@ export function routeWire(
   const buildDetourRoute = (detourGy: number, stepDir: -1 | 1, allowSharedY = false): Point[] => {
     const exitPref: -1 | 0 | 1 = sd.x > 0 ? 1 : sd.x < 0 ? -1 : 0;
     const entryPref: -1 | 0 | 1 = ed.x > 0 ? 1 : ed.x < 0 ? -1 : 0;
-    const exitX = findFreeChannelX(gx0, gy0, detourGy, exitPref);
-    const entryX = findFreeChannelX(gx1, detourGy, gy1, entryPref);
+    // Constrain channel search to the pin's outward half-space so wires NEVER cut backward through their own gate body!
+    const exitX = findFreeChannelX(gx0, gy0, detourGy, exitPref, exitPref, gy0);
+    const entryX = findFreeChannelX(gx1, detourGy, gy1, entryPref, entryPref, gy1);
     const trackY = findFreeTrackY(
       detourGy,
       Math.round(exitX / g),

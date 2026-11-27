@@ -6,6 +6,25 @@
 
 ---
 
+## 2026-11-27 — v0.15-r0.0 配線維持のコンポーネント差し替え機能・`instruction_decoder` 修正＆定数共有・複雑 `always_ff` (CICフィルタ等) 合成対応
+
+### 実施内容
+
+1. **配線を維持したままパーツを差し替えられる機能 & 配線を残して削除** (`src/core/catalog.ts`, `src/store/useProjectStore.ts`, `src/canvas/renderer.ts`, `src/components/CircuitCanvas.tsx`, `src/components/ContextMenu.tsx`, `src/components/InspectorPanel.tsx`, `src/App.tsx`, `src/styles.css`):
+   - `applyGateReplacement` / `mapReplacementPins` / `getCompatibleReplacementTypes` を新設し、位置・回転・互換プロパティ・接続配線を保ったままパーツを差し替え可能にしました（同一ピン ID → 意味エイリアス `rst↔clr`, `c↔cout` 等 → 同方向ピン順で自動張り替え、対応ピンが無い余剰配線も削除せずフローティング終端として保持）。
+   - **3 つの導線**: ① 左パレットから既存パーツ上へのドラッグ＆ドロップ差し替え（`effectAllowed = 'copyMove'` 対応、アンバー枠＋`差し替え → ...` バッジ表示）、② 右クリックメニューの互換パーツ 1 クリック差し替えチップ、③ インスペクタの差し替えドロップダウン。
+   - 右クリックメニューに「配線を残して削除」を追加し、パーツだけ消して既存配線をフローティング終端として残せるようにしました。
+2. **`instruction_decoder.sv` の生成不具合修正・定数重複削減・ゲート背後貫通配線の解消・出力側右寄せレイアウト** (`src/core/hdl.ts`, `src/core/routing.ts`):
+   - `parseProceduralAssignments` の `case` 分岐解析に外側デフォルトマップを引き継ぐよう修正し、`2'b01: if (carry_f == 1'b1) PC_we = 1'b1;` 等の条件付き分岐で `if` 条件と `carry_f` 接続が消失する不具合を修正。
+   - モジュール単位の定数 `CONST` キャッシュ (`constCache`)・共通部分式キャッシュ (`exprCache`)・1bit 定数ブール簡約を導入し、`1'b0` / `1'b1` や重複 `CMP` の大量生成を大幅に削減。
+   - `routeWire` の A* 探索ボックスと `buildDetourRoute` のチャネル探索にピン外向き制約を追加し、右向き出力ピン（`CONST` 等）から出た配線がゲート本体の左側へ回り込み・貫通する不具合を解消。
+   - `autoLayoutGates` に出力駆動コンポーネントの右寄せ（ALAP）パスを追加し、`MODULE_OUT` に直接または多く接続されているコンポーネントを `MODULE_OUT` のすぐ左隣（キャンバス右寄り）へ優先配置するよう改善。
+3. **複雑な `always_ff` / SystemVerilog 構文の論理合成対応 (`cic_decimator.sv` 等)** (`src/core/hdl.ts`):
+   - `$clog2(...)` パラメータ評価、インデクス付きパートセレクト (`[base -: width]` / `[base +: width]`)、1 次元/2 次元アンパック配列 (`logic signed [W-1:0] reg [0:N-1][0:M-1]`) のスカラー展開、コンパイル時 `for` ループの静的展開 (`unrollForLoops`)、符号拡張 (`extendNet`)、および複数レジスタ・条件付き保持 (`extractRegisterEnable`) を含む複雑な `always_ff` 合成に対応。
+   - `stripNonSynthesizable` が式中の `$clog2` 等のシステム関数を誤除去する不具合を修正。
+4. **テスト拡充・パス追従** (`tests/hdl_advanced.test.ts`, `tests/catalog_routing_hittest.test.ts`):
+   - `docs/test_hdl/td4/` への整理に合わせてテストパスを更新し、`instruction_decoder.sv` の全 32 通り真理値表＋定数重複排除＋反対側配線ゼロ検証、`cic_decimator.sv` の 16 レジスタ合成＆DC ゲイン検証、およびコンポーネント差し替えの自動テストを追加。
+
 ## 2026-11-27 — v0.14-r2.1 Cloudflare Workers プレビュービルド対応 (`wrangler.jsonc`)
 
 ### 実施内容

@@ -1,3 +1,12 @@
+---
+type: specification
+title: LogicFlow 要件定義書
+description: LogicFlowの初期の要件定義書、基本的にもう書き換えない
+tags: [logicflow]
+generated:
+  by: person/jj1urg
+---
+
 # 自作GUI論理回路シミュレーションツール
 
 ## Discription

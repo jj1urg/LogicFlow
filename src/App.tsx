@@ -361,6 +361,7 @@ export const App: React.FC = () => {
               setSelectedWireIds(w);
             }}
             onAddGateAt={handleAddGateAt}
+            onReplaceGate={store.replaceGate}
             onMoveGates={store.moveGates}
             onAddWire={store.addWire}
             onExtendFloatingWire={store.extendFloatingWire}
@@ -409,6 +410,7 @@ export const App: React.FC = () => {
           selectedGateIds={selectedGateIds}
           selectedWireIds={selectedWireIds}
           onUpdateGate={store.updateGate}
+          onReplaceGate={store.replaceGate}
           onUpdateWire={store.updateWire}
           onRerouteWire={store.rerouteSingleWire}
           onRenameCircuit={store.renameCircuit}
@@ -445,6 +447,8 @@ export const App: React.FC = () => {
           onCopy={store.copySelection}
           onPaste={store.pasteClipboard}
           onDuplicate={store.duplicateSelection}
+          onReplaceGate={store.replaceGate}
+          onDeleteKeepWires={() => store.deleteGatesKeepWires()}
           onDelete={store.deleteSelection}
           onSetSubcircuitMode={(gid, mode) => store.updateGate(gid, {}, { displayMode: mode })}
           onOpenSubcircuit={store.setActiveCircuit}

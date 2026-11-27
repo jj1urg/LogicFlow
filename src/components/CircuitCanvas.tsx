@@ -58,6 +58,7 @@ interface CircuitCanvasProps {
   selectedWireIds: Set<string>;
   onSelect: (gates: Set<string>, wires: Set<string>) => void;
   onAddGateAt: (type: GateType, x: number, y: number, subcircuitId?: string) => void;
+  onReplaceGate: (gateId: string, type: GateType, subcircuitId?: string) => void;
   onMoveGates: (positions: Map<string, Point>, recordHistory: boolean) => void;
   onAddWire: (
     startPt: Point,
@@ -110,6 +111,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
   selectedWireIds,
   onSelect,
   onAddGateAt,
+  onReplaceGate,
   onMoveGates,
   onAddWire,
   onExtendFloatingWire,
@@ -142,14 +144,24 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
   );
   const [spacePanning, setSpacePanning] = useState(false);
   const [dragGhostWorld, setDragGhostWorld] = useState<Point | null>(null);
+  const [replaceTargetGateId, setReplaceTargetGateId] = useState<string | null>(null);
 
   // Clear canvas ghost whenever drag session ends
   useEffect(() => {
     if (!draggingGate) {
       setDragGhostWorld(null);
+      setReplaceTargetGateId(null);
       onDragOverCanvasChange(false);
     }
   }, [draggingGate, onDragOverCanvasChange]);
+
+  const replaceTarget = React.useMemo(() => {
+    if (!draggingGate || !replaceTargetGateId || editLocked) return null;
+    const newLabel = draggingGate.subcircuitId
+      ? (project.circuits[draggingGate.subcircuitId]?.name ?? GATE_CATALOG[draggingGate.type].name)
+      : GATE_CATALOG[draggingGate.type].shortName;
+    return { gateId: replaceTargetGateId, newLabel };
+  }, [draggingGate, replaceTargetGateId, editLocked, project.circuits]);
 
   const ghostGate: GateInstance | null = React.useMemo(() => {
     if (!draggingGate || !dragGhostWorld || editLocked) return null;
@@ -384,7 +396,8 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
       marquee,
       simActive,
       runtimeInputs,
-      ghostGate,
+      ghostGate: replaceTarget ? null : ghostGate,
+      replaceTarget,
     });
   }, [
     vp,
@@ -403,6 +416,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
     simActive,
     runtimeInputs,
     ghostGate,
+    replaceTarget,
     resizeTick,
   ]);
 
@@ -1078,9 +1092,16 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
     if (editLocked) return;
     if (draggingGate || e.dataTransfer.types.includes('application/logicflow-gate')) {
       e.preventDefault();
-      e.dataTransfer.dropEffect = 'copy';
       const screenPt = getLocalScreenPt(e.clientX, e.clientY);
       const worldPt = screenToWorld(screenPt, vp);
+      const hit = hitTestGate(worldPt, circuit, project);
+      const canReplace =
+        hit !== null &&
+        (!draggingGate ||
+          hit.type !== draggingGate.type ||
+          hit.props.subcircuitId !== draggingGate.subcircuitId);
+      e.dataTransfer.dropEffect = canReplace ? 'move' : 'copy';
+      setReplaceTargetGateId(canReplace ? hit!.id : null);
       setDragGhostWorld(worldPt);
       onDragOverCanvasChange(true);
     }
@@ -1090,6 +1111,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
     const container = containerRef.current;
     if (container && !container.contains(e.relatedTarget as Node | null)) {
       setDragGhostWorld(null);
+      setReplaceTargetGateId(null);
       onDragOverCanvasChange(false);
     }
   };
@@ -1097,18 +1119,29 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setDragGhostWorld(null);
+    setReplaceTargetGateId(null);
     onDragOverCanvasChange(false);
     onDropComplete();
     if (editLocked) return;
     const raw = e.dataTransfer.getData('application/logicflow-gate');
-    if (!raw) return;
-    try {
-      const payload = JSON.parse(raw) as { type: GateType; subcircuitId?: string };
-      const screenPt = getLocalScreenPt(e.clientX, e.clientY);
-      const worldPt = screenToWorld(screenPt, vp);
+    let payload: { type: GateType; subcircuitId?: string } | null = null;
+    if (raw) {
+      try {
+        payload = JSON.parse(raw) as { type: GateType; subcircuitId?: string };
+      } catch {
+        payload = null;
+      }
+    } else if (draggingGate) {
+      payload = { type: draggingGate.type, subcircuitId: draggingGate.subcircuitId };
+    }
+    if (!payload) return;
+    const screenPt = getLocalScreenPt(e.clientX, e.clientY);
+    const worldPt = screenToWorld(screenPt, vp);
+    const hit = hitTestGate(worldPt, circuit, project);
+    if (hit && (hit.type !== payload.type || hit.props.subcircuitId !== payload.subcircuitId)) {
+      onReplaceGate(hit.id, payload.type, payload.subcircuitId);
+    } else {
       onAddGateAt(payload.type, worldPt.x, worldPt.y, payload.subcircuitId);
-    } catch {
-      // ignore invalid drop
     }
   };
 

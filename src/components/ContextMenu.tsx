@@ -11,12 +11,22 @@ import {
   Maximize2,
   ClipboardPaste,
   RefreshCw,
+  Replace,
   RotateCw,
   Spline,
   Tag,
   Trash2,
+  Unlink,
 } from 'lucide-react';
-import { GateInstance, Point, RouteMode, SubcircuitDisplayMode, Wire } from '../core/types';
+import { GATE_CATALOG, getCompatibleReplacementTypes } from '../core/catalog';
+import {
+  GateInstance,
+  GateType,
+  Point,
+  RouteMode,
+  SubcircuitDisplayMode,
+  Wire,
+} from '../core/types';
 
 export interface ContextMenuState {
   screenX: number;
@@ -43,6 +53,8 @@ interface ContextMenuProps {
   onCopy: () => void;
   onPaste: () => void;
   onDuplicate: () => void;
+  onReplaceGate: (gateId: string, newType: GateType) => void;
+  onDeleteKeepWires: () => void;
   onDelete: () => void;
   onSetSubcircuitMode: (gateId: string, mode: SubcircuitDisplayMode) => void;
   onOpenSubcircuit: (circuitId: string) => void;
@@ -72,6 +84,8 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
   onCopy,
   onPaste,
   onDuplicate,
+  onReplaceGate,
+  onDeleteKeepWires,
   onDelete,
   onSetSubcircuitMode,
   onOpenSubcircuit,
@@ -243,9 +257,37 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
                 </>
               )}
 
+              {(() => {
+                const repls = getCompatibleReplacementTypes(menu.gate!.type);
+                if (repls.length === 0) return null;
+                return (
+                  <>
+                    <div className="ctx-sep" />
+                    <div className="ctx-header ctx-header-inline">
+                      <Replace size={11} /> <span>パーツを差し替え（配線維持）</span>
+                    </div>
+                    <div className="ctx-replace-grid">
+                      {repls.map((rt) => (
+                        <button
+                          key={rt}
+                          className="ctx-replace-chip"
+                          onClick={() => run(() => onReplaceGate(menu.gate!.id, rt))}
+                          title={`${GATE_CATALOG[rt].name} に差し替え`}
+                        >
+                          {GATE_CATALOG[rt].shortName}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                );
+              })()}
+
               <div className="ctx-sep" />
+              <button className="ctx-item" onClick={() => run(onDeleteKeepWires)}>
+                <Unlink size={14} /> <span>配線を残して削除</span>
+              </button>
               <button className="ctx-item danger" onClick={() => run(onDelete)}>
-                <Trash2 size={14} /> <span>削除</span> <kbd>Del</kbd>
+                <Trash2 size={14} /> <span>削除（接続配線も削除）</span> <kbd>Del</kbd>
               </button>
             </>
           )}

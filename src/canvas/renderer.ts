@@ -58,6 +58,7 @@ export interface RenderContextState {
   simActive: boolean;
   runtimeInputs?: Record<string, RuntimeInputOverride>;
   ghostGate?: GateInstance | null;
+  replaceTarget?: { gateId: string; newLabel: string } | null;
 }
 
 const NEUTRAL_WIRE = '#7c8ca3';
@@ -204,8 +205,39 @@ export function renderCanvas(
   // Draw circuit contents
   drawCircuitContents(ctx, circuit, project, snapshot, state, 0, viewBounds);
 
-  // Draw drag-and-drop ghost symbol preview snapped at exact target coordinates
-  if (state.ghostGate) {
+  // Draw drag-and-drop replacement highlight OR ghost symbol preview
+  if (state.replaceTarget) {
+    const targetGate = circuit.gates.find((g) => g.id === state.replaceTarget!.gateId);
+    if (targetGate) {
+      const b = getGateBounds(targetGate, project);
+      ctx.save();
+      roundRect(ctx, b.x - 8, b.y - 8, b.width + 16, b.height + 16, 11);
+      ctx.fillStyle = 'rgba(245, 158, 11, 0.16)';
+      ctx.fill();
+      ctx.strokeStyle = '#f59e0b';
+      ctx.lineWidth = 2.4 / Math.min(1.5, viewport.zoom);
+      ctx.setLineDash([6, 4]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      const badge = `差し替え → ${state.replaceTarget.newLabel}`;
+      ctx.font = '700 11px Inter, system-ui, sans-serif';
+      const tw = ctx.measureText(badge).width + 16;
+      const bx = targetGate.x - tw / 2;
+      const by = b.y - 32;
+      roundRect(ctx, bx, by, tw, 20, 6);
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.96)';
+      ctx.fill();
+      ctx.strokeStyle = '#f59e0b';
+      ctx.lineWidth = 1.4;
+      ctx.stroke();
+      ctx.fillStyle = '#fde68a';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(badge, targetGate.x, by + 10);
+      ctx.restore();
+    }
+  } else if (state.ghostGate) {
     const b = getGateBounds(state.ghostGate, project);
     ctx.save();
     // Subtle drop alignment crosshairs

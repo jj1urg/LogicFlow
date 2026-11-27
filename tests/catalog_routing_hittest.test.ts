@@ -13,7 +13,9 @@ import {
   worldToScreen,
 } from '../src/canvas/hitTest';
 import {
+  applyGateReplacement,
   GATE_CATALOG,
+  getCompatibleReplacementTypes,
   getGateBounds,
   getGatePins,
   getGateSize,
@@ -822,5 +824,158 @@ describe('Canvas Hit-Testing & Viewport Coordinate Transforms', () => {
         'start',
       ),
     ).toBe('left');
+  });
+
+  it('replaces components in-place while preserving wires, mapping semantic aliases, and floating excess endpoints', () => {
+    expect(getCompatibleReplacementTypes('TOGGLE')).toContain('CLOCK');
+    expect(getCompatibleReplacementTypes('AND')).toContain('OR');
+
+    // 1. TOGGLE -> CLOCK keeps out wire attached & preserves position/rotation/label
+    const circ1: CircuitDocument = {
+      id: 'c_rep1',
+      name: 'Rep1',
+      gates: [
+        {
+          id: 'src',
+          type: 'TOGGLE',
+          x: 100,
+          y: 120,
+          rotation: 90,
+          label: 'CLK_SRC',
+          props: { bitWidth: 1, value: '1' },
+        },
+        {
+          id: 'led',
+          type: 'LED',
+          x: 260,
+          y: 120,
+          rotation: 0,
+          label: 'L',
+          props: { bitWidth: 1 },
+        },
+      ],
+      wires: [
+        {
+          id: 'w_clk',
+          from: { gateId: 'src', pinId: 'out' },
+          to: { gateId: 'led', pinId: 'in' },
+          points: [
+            { x: 100, y: 148 },
+            { x: 238, y: 120 },
+          ],
+          routeMode: 'grid',
+        },
+      ],
+    };
+    const proj1 = makeEmptyProject(circ1);
+    const res1 = applyGateReplacement(circ1, 'src', 'CLOCK', proj1);
+    expect(res1.replaced).toBe(true);
+    expect(res1.reattached).toBe(1);
+    expect(res1.detachedToFloating).toBe(0);
+    expect(circ1.gates[0].type).toBe('CLOCK');
+    expect(circ1.gates[0].rotation).toBe(90);
+    expect(circ1.gates[0].label).toBe('CLK_SRC');
+    expect(circ1.wires[0].from).toEqual({ gateId: 'src', pinId: 'out' });
+
+    // 2. 3-input AND -> 1-input NOT reattaches in0 & out and preserves in1/in2 wires as floating ends (never deletes them!)
+    const circ2: CircuitDocument = {
+      id: 'c_rep2',
+      name: 'Rep2',
+      gates: [
+        {
+          id: 'g_and',
+          type: 'AND',
+          x: 200,
+          y: 120,
+          rotation: 0,
+          label: 'U1',
+          props: { bitWidth: 4, inputCount: 3 },
+        },
+      ],
+      wires: [
+        {
+          id: 'w0',
+          to: { gateId: 'g_and', pinId: 'in0' },
+          points: [
+            { x: 60, y: 100 },
+            { x: 166, y: 100 },
+          ],
+          routeMode: 'grid',
+        },
+        {
+          id: 'w1',
+          to: { gateId: 'g_and', pinId: 'in1' },
+          points: [
+            { x: 60, y: 120 },
+            { x: 166, y: 120 },
+          ],
+          routeMode: 'grid',
+        },
+        {
+          id: 'w2',
+          to: { gateId: 'g_and', pinId: 'in2' },
+          points: [
+            { x: 60, y: 140 },
+            { x: 166, y: 140 },
+          ],
+          routeMode: 'grid',
+        },
+        {
+          id: 'wout',
+          from: { gateId: 'g_and', pinId: 'out' },
+          points: [
+            { x: 234, y: 120 },
+            { x: 320, y: 120 },
+          ],
+          routeMode: 'grid',
+        },
+      ],
+    };
+    const proj2 = makeEmptyProject(circ2);
+    const res2 = applyGateReplacement(circ2, 'g_and', 'NOT', proj2);
+    expect(res2.replaced).toBe(true);
+    expect(res2.reattached).toBe(2);
+    expect(res2.detachedToFloating).toBe(2);
+    expect(circ2.wires.length).toBe(4);
+    expect(circ2.gates[0].props.bitWidth).toBe(4);
+    expect(circ2.wires.find((w) => w.id === 'w0')?.to).toEqual({ gateId: 'g_and', pinId: 'in0' });
+    expect(circ2.wires.find((w) => w.id === 'w1')?.to).toBeUndefined();
+    expect(circ2.wires.find((w) => w.id === 'w2')?.to).toBeUndefined();
+    expect(circ2.wires.find((w) => w.id === 'wout')?.from).toEqual({
+      gateId: 'g_and',
+      pinId: 'out',
+    });
+
+    // 3. D_FF -> REGISTER maps semantic alias rst -> clr automatically
+    const circ3: CircuitDocument = {
+      id: 'c_rep3',
+      name: 'Rep3',
+      gates: [
+        {
+          id: 'ff',
+          type: 'D_FF',
+          x: 200,
+          y: 120,
+          rotation: 0,
+          label: 'R',
+          props: { bitWidth: 1 },
+        },
+      ],
+      wires: [
+        {
+          id: 'wrst',
+          to: { gateId: 'ff', pinId: 'rst' },
+          points: [
+            { x: 200, y: 200 },
+            { x: 200, y: 164 },
+          ],
+          routeMode: 'grid',
+        },
+      ],
+    };
+    const proj3 = makeEmptyProject(circ3);
+    const res3 = applyGateReplacement(circ3, 'ff', 'REGISTER', proj3);
+    expect(res3.replaced).toBe(true);
+    expect(circ3.wires[0].to).toEqual({ gateId: 'ff', pinId: 'clr' });
   });
 });
