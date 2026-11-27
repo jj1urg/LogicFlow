@@ -6,6 +6,14 @@
 
 ---
 
+## 2026-11-28 — v0.16-r3.0 右ドッキング HDL ソースパネルの横スクロール／パン不可不具合を修正
+
+### 実施内容
+
+- **右ドッキング HDL ソースパネルの横スクロール・パン対応** (`src/styles.css`, `src/components/HdlDockPanel.tsx`):
+  - `.hdl-dock-main-split` 内の `.hdl-dock-body` に `min-width: 0; overflow: hidden;`、`.hdl-code-viewer.docked` に `min-width: 0; width: 100%; overflow: auto; overscroll-behavior: contain;` を設定し、右ドッキング時に長い HDL 行が親の `overflow: hidden` で見切れて横スクロール不能になっていた Flexbox 制約バグを修正しました。
+  - 二本指横スクロール・横スクロールバー・`Shift + ホイール` に加え、コードビューア上での中ドラッグ（または `Alt + 左ドラッグ`）によるパン移動にも対応しました（`overscroll-behavior: contain` により横スワイプ時のブラウザ戻る誤爆も防止）。
+
 ## 2026-11-28 — v0.16-r2.0 衝突不定時の OUT 端子自己駆動色維持・ライブポップアップのズーム維持・タブ別ビューポート記憶
 
 ### 実施内容

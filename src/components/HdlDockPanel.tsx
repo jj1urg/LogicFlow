@@ -694,10 +694,34 @@ export const HdlDockPanel: React.FC<HdlDockPanelProps> = ({
               className="hdl-code-viewer docked"
               role="region"
               aria-label="Original HDL source"
+              onMouseDown={(e) => {
+                // Support middle-click (or Alt+left-click) drag panning inside the code viewer
+                if (e.button !== 1 && !(e.button === 0 && e.altKey)) return;
+                e.preventDefault();
+                const el = e.currentTarget;
+                const startX = e.clientX;
+                const startY = e.clientY;
+                const origL = el.scrollLeft;
+                const origT = el.scrollTop;
+                const onMove = (ev: MouseEvent) => {
+                  el.scrollLeft = origL - (ev.clientX - startX);
+                  el.scrollTop = origT - (ev.clientY - startY);
+                };
+                const onUp = () => {
+                  window.removeEventListener('mousemove', onMove);
+                  window.removeEventListener('mouseup', onUp);
+                };
+                window.addEventListener('mousemove', onMove);
+                window.addEventListener('mouseup', onUp);
+              }}
               onDoubleClick={() => {
                 if (canEdit) setEditing(true);
               }}
-              title={canEdit ? 'ダブルクリックで編集モードへ切替' : undefined}
+              title={
+                canEdit
+                  ? 'ダブルクリックで編集モードへ切替（二本指スクロール / Shift+ホイール / 中ドラッグで横スクロール）'
+                  : undefined
+              }
             >
               {lines.map((ln, idx) => (
                 <div key={idx} className="hdl-line">
