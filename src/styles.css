@@ -2436,3 +2436,69 @@ body,
   overflow: auto;
   background: #070b14;
 }
+
+/* --- Inspector Embedded Live Watch Readouts (below existing section divider) --- */
+.inspector-locked .inspector-watch-section {
+  pointer-events: auto;
+  opacity: 1;
+}
+
+.inspector-watch-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.inspector-watch-wave-btn {
+  border: 1px solid var(--border-strong);
+  background: var(--bg-surface);
+  color: var(--text-muted);
+  border-radius: 5px;
+  font-size: 10.5px;
+  padding: 2px 7px;
+  cursor: pointer;
+}
+
+.inspector-watch-wave-btn:hover {
+  border-color: var(--accent-green);
+  color: #86efac;
+}
+
+.inspector-watch-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.inspector-watch-card {
+  margin-top: 0;
+  padding: 8px 10px;
+}
+
+.inspector-watch-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.inspector-watch-label {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-main);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inspector-watch-val {
+  cursor: pointer;
+}
+
+.inspector-watch-val:hover {
+  text-decoration: underline;
+}

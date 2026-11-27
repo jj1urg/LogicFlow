@@ -197,4 +197,80 @@ describe('Live Subcircuit Popup & Signal Watch / Waveform Helpers', () => {
     expect(highZ.bits[0]).toBe(BIT_Z);
     expect(formatWatchValue(highZ, 'auto')).toBe('Z');
   });
+
+  it('4. excludes ambiguous multi-output blocks from single-click gate watch and records Hi-Z own output on disabled TRIBUF', () => {
+    const src = `
+      module tri_bus(
+        input  logic a,
+        input  logic b,
+        input  logic en_a,
+        input  logic en_b,
+        output logic bus_y
+      );
+        assign bus_y = en_a ? a : 1'bz;
+        assign bus_y = en_b ? b : 1'bz;
+      endmodule
+    `;
+    const res = importVerilogToCircuits(src);
+    const proj = makeProject(res.circuits, res.topCircuitId);
+    const topDoc = proj.circuits[res.topCircuitId];
+    const seq = createEmptySequentialState();
+
+    // Drive TRIBUF 0 enabled (en_a=1, a=1) and TRIBUF 1 disabled (en_b=0, b=0) onto the same shared bus
+    const inA = topDoc.gates.find((g) => g.label === 'a')!;
+    const inB = topDoc.gates.find((g) => g.label === 'b')!;
+    const inEnA = topDoc.gates.find((g) => g.label === 'en_a')!;
+    const inEnB = topDoc.gates.find((g) => g.label === 'en_b')!;
+    inA.props.value = '1';
+    inB.props.value = '0';
+    inEnA.props.value = '1';
+    inEnB.props.value = '0';
+
+    const snap = simulateCircuit(topDoc, proj, seq);
+    const triGates = topDoc.gates.filter((g) => g.type === 'TRIBUF');
+    expect(triGates).toHaveLength(2);
+
+    // Both share the bus wire resolved to 1, but the disabled TRIBUF records its own driven output as Z!
+    const ownStates = triGates.map((g) => snap.gateInternalValues[g.id]?.bits[0]);
+    expect(ownStates).toContain(BIT_1);
+    expect(ownStates).toContain(BIT_Z);
+    for (const g of triGates) {
+      expect(snap.pinValues[`${g.id}:out`]?.bits[0]).toBe(BIT_1);
+      expect(getDefaultWatchPin(g, proj)?.pinId).toBe('out');
+    }
+
+    // Ambiguous multi-output blocks must return null from getDefaultWatchPin
+    expect(
+      getDefaultWatchPin(
+        { id: 's1', type: 'SUBCIRCUIT', x: 0, y: 0, rotation: 0, label: 'u1', props: {} },
+        proj,
+      ),
+    ).toBeNull();
+    expect(
+      getDefaultWatchPin(
+        {
+          id: 'sp1',
+          type: 'SPLITTER',
+          x: 0,
+          y: 0,
+          rotation: 0,
+          label: 'sp',
+          props: { splitMode: 'split', splitWidths: [1, 1], bitWidth: 2 },
+        },
+        proj,
+      ),
+    ).toBeNull();
+    expect(
+      getDefaultWatchPin(
+        { id: 'dm1', type: 'DEMUX', x: 0, y: 0, rotation: 0, label: 'dm', props: {} },
+        proj,
+      ),
+    ).toBeNull();
+    expect(
+      getDefaultWatchPin(
+        { id: 'cmp1', type: 'COMPARATOR', x: 0, y: 0, rotation: 0, label: 'cmp', props: {} },
+        proj,
+      ),
+    ).toBeNull();
+  });
 });

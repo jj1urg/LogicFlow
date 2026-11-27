@@ -890,8 +890,14 @@ function drawGate(
   for (const pin of pins) {
     const pos = getPinWorldPos(gate, pin);
     const pk = `${gate.id}:${pin.id}`;
-    const pVal = snapshot?.pinValues[pk];
-    const pCause = snapshot?.pinXCauses?.[pk];
+    // Disabled tri-state buffer (driving Z, not 0/1) keeps its OUT pin colored as Z instead of inheriting the shared bus color
+    const triOwnOut =
+      gate.type === 'TRIBUF' && pin.id === 'out'
+        ? snapshot?.gateInternalValues[gate.id]
+        : undefined;
+    const isTriHiZ = Boolean(triOwnOut && dominantState(triOwnOut) === BIT_Z);
+    const pVal = isTriHiZ ? triOwnOut : snapshot?.pinValues[pk];
+    const pCause = isTriHiZ ? undefined : snapshot?.pinXCauses?.[pk];
     const pSig = signalColor(pVal, showSignals, pCause);
     const isPinHovered =
       !isNested && state.hoveredPin?.gate.id === gate.id && state.hoveredPin?.pin.id === pin.id;
@@ -1758,13 +1764,21 @@ function drawPinTooltip(
   zoom: number,
 ) {
   const pk = `${hit.gate.id}:${hit.pin.id}`;
-  const val = snapshot?.pinValues[pk];
-  const xCause = snapshot?.pinXCauses?.[pk];
+  const triOwnOut =
+    hit.gate.type === 'TRIBUF' && hit.pin.id === 'out'
+      ? snapshot?.gateInternalValues[hit.gate.id]
+      : undefined;
+  const isTriHiZ = Boolean(triOwnOut && dominantState(triOwnOut) === BIT_Z);
+  const netVal = snapshot?.pinValues[pk];
+  const val = isTriHiZ ? triOwnOut : netVal;
+  const xCause = isTriHiZ ? undefined : snapshot?.pinXCauses?.[pk];
   const valStr =
     simActive && val
-      ? xCause && dominantState(val) === BIT_X
-        ? `${formatValue(val, val.width > 1 ? 'hex' : 'bin')} [${X_CAUSE_LABELS[xCause]}]`
-        : formatValue(val, val.width > 1 ? 'hex' : 'bin')
+      ? isTriHiZ && netVal && dominantState(netVal) !== BIT_Z
+        ? `Z (バス: ${formatValue(netVal, netVal.width > 1 ? 'hex' : 'bin')})`
+        : xCause && dominantState(val) === BIT_X
+          ? `${formatValue(val, val.width > 1 ? 'hex' : 'bin')} [${X_CAUSE_LABELS[xCause]}]`
+          : formatValue(val, val.width > 1 ? 'hex' : 'bin')
       : 'PAUSED';
   const text = `${hit.pin.name} (${hit.pin.bitWidth}b) = ${valStr}`;
 

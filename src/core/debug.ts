@@ -113,16 +113,38 @@ export function makePinWatchId(circuitId: string, gateId: string, pinId: string)
   return `pin:${circuitId}:${gateId}:${pinId}`;
 }
 
-/** Pick the primary observable pin on a gate (output pin preferred, else input for sinks like MODULE_OUT/LED) */
+/**
+ * Pick the unambiguous primary observable pin on a gate for single-click gate watch.
+ * Multi-output structural blocks (SUBCIRCUIT, DEMUX, DECODER, COMPARATOR, split SPLITTER,
+ * unpack IFACE_BUNDLE) return `null` so users watch their specific output wires instead!
+ */
 export function getDefaultWatchPin(
   gate: GateInstance,
   project: ProjectDocument,
 ): { pinId: string; pinName: string; bitWidth: number } | null {
+  if (
+    gate.type === 'SUBCIRCUIT' ||
+    gate.type === 'DEMUX' ||
+    gate.type === 'DECODER' ||
+    gate.type === 'COMPARATOR' ||
+    (gate.type === 'SPLITTER' && (gate.props.splitMode ?? 'split') === 'split') ||
+    (gate.type === 'IFACE_BUNDLE' && (gate.props.bundleMode ?? 'pack') === 'unpack')
+  ) {
+    return null;
+  }
   const pins = getGatePins(gate, project);
   if (pins.length === 0) return null;
-  const outPin = pins.find((p) => p.dir === 'out');
-  const chosen = outPin ?? pins[0];
-  return { pinId: chosen.id, pinName: chosen.name, bitWidth: chosen.bitWidth };
+  // Prefer canonical primary output (`out`, `q`, `s`, `dout`, `bus`), else first output, else sole input (MODULE_OUT/LED)
+  const outPins = pins.filter((p) => p.dir === 'out');
+  if (outPins.length > 0) {
+    const preferred =
+      outPins.find(
+        (p) => p.id === 'out' || p.id === 'q' || p.id === 's' || p.id === 'dout' || p.id === 'bus',
+      ) ?? outPins[0];
+    return { pinId: preferred.id, pinName: preferred.name, bitWidth: preferred.bitWidth };
+  }
+  const soleIn = pins[0];
+  return { pinId: soleIn.id, pinName: soleIn.name, bitWidth: soleIn.bitWidth };
 }
 
 /** Build a clean default human-readable label for a watched wire */

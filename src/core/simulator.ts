@@ -489,7 +489,9 @@ export function simulateCompiledCircuit(
       case 'TRIBUF': {
         const a = readPinFn(gate.id, 'in0', bw);
         const en = readPinFn(gate.id, 'en', 1).bits[0];
-        drivePinFn(gate.id, 'out', vecTriBuf(a, en));
+        const triOut = vecTriBuf(a, en);
+        if (recordSideEffects) gateInternalValues[gate.id] = triOut;
+        drivePinFn(gate.id, 'out', triOut);
         break;
       }
       case 'AND':

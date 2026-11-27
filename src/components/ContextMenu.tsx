@@ -48,6 +48,8 @@ interface ContextMenuProps {
   targetSubHasHdlSource: boolean;
   targetSubIsStub: boolean;
   isWireWatched: boolean;
+  canWatchGate: boolean;
+  watchGatePinLabel?: string;
   isGateWatched: boolean;
   onClose: () => void;
   onSetWireNetLabel: (wire: Wire) => void;
@@ -85,6 +87,8 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
   targetSubHasHdlSource,
   targetSubIsStub,
   isWireWatched,
+  canWatchGate,
+  watchGatePinLabel,
   isGateWatched,
   onClose,
   onSetWireNetLabel,
@@ -147,10 +151,16 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
               <span>{isWireWatched ? '信号ウォッチから解除' : 'このワイヤーをウォッチに追加'}</span>
             </button>
           )}
-          {menu.gate && !menu.wire && (
+          {menu.gate && !menu.wire && canWatchGate && (
             <button className="ctx-item" onClick={() => run(() => onToggleWatchGate(menu.gate!))}>
               <Activity size={14} />
-              <span>{isGateWatched ? '信号ウォッチから解除' : 'この信号をウォッチに追加'}</span>
+              <span>
+                {isGateWatched
+                  ? '信号ウォッチから解除'
+                  : watchGatePinLabel
+                    ? `この信号をウォッチに追加 (${watchGatePinLabel})`
+                    : 'この信号をウォッチに追加'}
+              </span>
             </button>
           )}
           {menu.gate?.type === 'SUBCIRCUIT' && menu.gate.props.subcircuitId && (
@@ -227,10 +237,21 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
           {menu.gate && !menu.wire && (
             <>
               <div className="ctx-header">{menu.gate.label || menu.gate.type}</div>
-              <button className="ctx-item" onClick={() => run(() => onToggleWatchGate(menu.gate!))}>
-                <Activity size={14} />
-                <span>{isGateWatched ? '信号ウォッチから解除' : 'この信号をウォッチに追加'}</span>
-              </button>
+              {canWatchGate && (
+                <button
+                  className="ctx-item"
+                  onClick={() => run(() => onToggleWatchGate(menu.gate!))}
+                >
+                  <Activity size={14} />
+                  <span>
+                    {isGateWatched
+                      ? '信号ウォッチから解除'
+                      : watchGatePinLabel
+                        ? `この信号をウォッチに追加 (${watchGatePinLabel})`
+                        : 'この信号をウォッチに追加'}
+                  </span>
+                </button>
+              )}
               <button className="ctx-item" onClick={() => run(() => onSetGateLabel(menu.gate!))}>
                 <Tag size={14} /> <span>ラベル名を変更</span>
               </button>

@@ -9,9 +9,11 @@ import {
   RotateCw,
   Sliders,
   Trash2,
+  X,
   ZoomIn,
 } from 'lucide-react';
 import { GATE_CATALOG, getCompatibleReplacementTypes } from '../core/catalog';
+import { formatWatchValue, sampleWatchedSignals, WatchRadix, WatchTarget } from '../core/debug';
 import {
   BIT_X,
   dominantState,
@@ -57,8 +59,12 @@ interface InspectorPanelProps {
   onOpenMemoryEditor: (gateId: string) => void;
   onOpenSymbolEditor: () => void;
   onDeleteSelection: () => void;
+  watchTargets: WatchTarget[];
   isWireWatched: (wireId: string) => boolean;
   onToggleWatchWire: (wire: Wire) => void;
+  onRemoveWatchTarget: (targetId: string) => void;
+  onUpdateWatchTarget: (targetId: string, patch: Partial<WatchTarget>) => void;
+  onToggleWatchPanel: () => void;
 }
 
 export const InspectorPanel: React.FC<InspectorPanelProps> = ({
@@ -80,9 +86,18 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
   onOpenMemoryEditor,
   onOpenSymbolEditor,
   onDeleteSelection,
+  watchTargets,
   isWireWatched,
   onToggleWatchWire,
+  onRemoveWatchTarget,
+  onUpdateWatchTarget,
+  onToggleWatchPanel,
 }) => {
+  const activeWatchTargets = watchTargets.filter((t) => t.circuitId === circuit.id);
+  const sampledWatch =
+    simActive && snapshot && activeWatchTargets.length > 0
+      ? sampleWatchedSignals(activeWatchTargets, circuit, project, snapshot)
+      : {};
   const selectedGate =
     selectedGateIds.size === 1
       ? (circuit.gates.find((g) => selectedGateIds.has(g.id)) ?? null)
@@ -161,6 +176,72 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
             onOpenSymbolEditor={onOpenSymbolEditor}
             onOpenHdlSource={() => onOpenHdlSource(circuit.id)}
           />
+        )}
+
+        {activeWatchTargets.length > 0 && (
+          <div className="inspector-section inspector-watch-section">
+            <div className="inspector-watch-head">
+              <div className="section-title" style={{ marginBottom: 0 }}>
+                <Activity size={12} style={{ marginRight: 5, verticalAlign: -1 }} />
+                ウォッチ中の信号 ({activeWatchTargets.length})
+              </div>
+              <button
+                className="inspector-watch-wave-btn"
+                onClick={onToggleWatchPanel}
+                title="下部の波形タイムチャートを表示 / 非表示"
+              >
+                波形
+              </button>
+            </div>
+            <div className="inspector-watch-cards">
+              {activeWatchTargets.map((t) => {
+                const entry = sampledWatch[t.id];
+                const val = entry?.value;
+                const bit = dominantState(val);
+                const xCause = bit === BIT_X ? entry?.xCause : undefined;
+                const dotColor = xCause ? X_CAUSE_COLORS[xCause] : SIGNAL_COLORS[bit];
+                const stateLabel = xCause ? X_CAUSE_LABELS[xCause] : SIGNAL_LABELS[bit];
+
+                return (
+                  <div key={t.id} className="live-signal-card inspector-watch-card">
+                    <div className="signal-card-header inspector-watch-card-head">
+                      <span className="inspector-watch-label" title={t.label}>
+                        {t.label}
+                      </span>
+                      <button
+                        className="palette-act-btn danger"
+                        onClick={() => onRemoveWatchTarget(t.id)}
+                        title="ウォッチから解除"
+                      >
+                        <X size={11} />
+                      </button>
+                    </div>
+                    {simActive && val ? (
+                      <div className="signal-readout">
+                        <span className="signal-dot" style={{ backgroundColor: dotColor }} />
+                        <span
+                          className="signal-val inspector-watch-val"
+                          title="クリックで表示基数を切替 (自動/HEX/BIN/DEC/SIGNED)"
+                          onClick={() => {
+                            const order: WatchRadix[] = ['auto', 'hex', 'bin', 'dec', 'signed'];
+                            const next = order[(order.indexOf(t.radix) + 1) % order.length];
+                            onUpdateWatchTarget(t.id, { radix: next });
+                          }}
+                        >
+                          {formatWatchValue(val, t.radix)}
+                        </span>
+                        <span className="signal-meta">
+                          ({val.width} bit · 状態: {stateLabel})
+                        </span>
+                      </div>
+                    ) : (
+                      <div className="muted-text">シミュレーション停止中</div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         )}
       </div>
     </aside>

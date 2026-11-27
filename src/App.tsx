@@ -632,8 +632,14 @@ export const App: React.FC = () => {
           onOpenMemoryEditor={(gid) => setMemoryGateId(gid)}
           onOpenSymbolEditor={() => setShowSymbolModal(true)}
           onDeleteSelection={store.deleteSelection}
+          watchTargets={watchTargets}
           isWireWatched={isWireWatched}
           onToggleWatchWire={handleToggleWatchWire}
+          onRemoveWatchTarget={(tid) => setWatchTargets((prev) => prev.filter((t) => t.id !== tid))}
+          onUpdateWatchTarget={(tid, patch) =>
+            setWatchTargets((prev) => prev.map((t) => (t.id === tid ? { ...t, ...patch } : t)))
+          }
+          onToggleWatchPanel={() => setShowWatchPanel((v) => !v)}
         />
       </main>
 
@@ -673,6 +679,12 @@ export const App: React.FC = () => {
             project.circuits[contextMenu.gate.props.subcircuitId]?.isStub,
           )}
           isWireWatched={Boolean(contextMenu.wire && isWireWatched(contextMenu.wire.id))}
+          canWatchGate={Boolean(
+            contextMenu.gate && getDefaultWatchPin(contextMenu.gate, project) !== null,
+          )}
+          watchGatePinLabel={
+            contextMenu.gate ? getDefaultWatchPin(contextMenu.gate, project)?.pinName : undefined
+          }
           isGateWatched={Boolean(contextMenu.gate && isGateWatched(contextMenu.gate))}
           onClose={() => setContextMenu(null)}
           onSetWireNetLabel={quickEditWireLabel}
