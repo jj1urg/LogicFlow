@@ -890,14 +890,15 @@ function drawGate(
   for (const pin of pins) {
     const pos = getPinWorldPos(gate, pin);
     const pk = `${gate.id}:${pin.id}`;
-    // Disabled tri-state buffer (driving Z, not 0/1) keeps its OUT pin colored as Z instead of inheriting the shared bus color
-    const triOwnOut =
-      gate.type === 'TRIBUF' && pin.id === 'out'
-        ? snapshot?.gateInternalValues[gate.id]
-        : undefined;
-    const isTriHiZ = Boolean(triOwnOut && dominantState(triOwnOut) === BIT_Z);
-    const pVal = isTriHiZ ? triOwnOut : snapshot?.pinValues[pk];
-    const pCause = isTriHiZ ? undefined : snapshot?.pinXCauses?.[pk];
+    // Output pins keep their own driven color when driving Z (e.g. disabled TRIBUF) or when the shared wire has a 0/1 conflict
+    const drivenVal = pin.dir === 'out' ? snapshot?.pinDrivenValues?.[pk] : undefined;
+    const netVal = snapshot?.pinValues[pk];
+    const netCause = snapshot?.pinXCauses?.[pk];
+    const isHiZDriver = Boolean(drivenVal && dominantState(drivenVal) === BIT_Z);
+    const isConflictDriver = Boolean(drivenVal && netCause === 'conflict');
+    const useOwnDriven = isHiZDriver || isConflictDriver;
+    const pVal = useOwnDriven ? drivenVal : netVal;
+    const pCause = useOwnDriven ? undefined : netCause;
     const pSig = signalColor(pVal, showSignals, pCause);
     const isPinHovered =
       !isNested && state.hoveredPin?.gate.id === gate.id && state.hoveredPin?.pin.id === pin.id;
@@ -1764,22 +1765,28 @@ function drawPinTooltip(
   zoom: number,
 ) {
   const pk = `${hit.gate.id}:${hit.pin.id}`;
-  const triOwnOut =
-    hit.gate.type === 'TRIBUF' && hit.pin.id === 'out'
-      ? snapshot?.gateInternalValues[hit.gate.id]
-      : undefined;
-  const isTriHiZ = Boolean(triOwnOut && dominantState(triOwnOut) === BIT_Z);
+  const drivenVal = hit.pin.dir === 'out' ? snapshot?.pinDrivenValues?.[pk] : undefined;
   const netVal = snapshot?.pinValues[pk];
-  const val = isTriHiZ ? triOwnOut : netVal;
-  const xCause = isTriHiZ ? undefined : snapshot?.pinXCauses?.[pk];
-  const valStr =
-    simActive && val
-      ? isTriHiZ && netVal && dominantState(netVal) !== BIT_Z
-        ? `Z (バス: ${formatValue(netVal, netVal.width > 1 ? 'hex' : 'bin')})`
-        : xCause && dominantState(val) === BIT_X
-          ? `${formatValue(val, val.width > 1 ? 'hex' : 'bin')} [${X_CAUSE_LABELS[xCause]}]`
-          : formatValue(val, val.width > 1 ? 'hex' : 'bin')
-      : 'PAUSED';
+  const netCause = snapshot?.pinXCauses?.[pk];
+  const isHiZDriver = Boolean(drivenVal && dominantState(drivenVal) === BIT_Z);
+  const isConflictDriver = Boolean(drivenVal && netCause === 'conflict');
+  const useOwnDriven = isHiZDriver || isConflictDriver;
+  const val = useOwnDriven ? drivenVal : netVal;
+  const xCause = useOwnDriven ? undefined : netCause;
+
+  let valStr = 'PAUSED';
+  if (simActive && val) {
+    const ownStr = formatValue(val, val.width > 1 ? 'hex' : 'bin');
+    if (isHiZDriver && netVal && dominantState(netVal) !== BIT_Z) {
+      valStr = `Z (バス: ${formatValue(netVal, netVal.width > 1 ? 'hex' : 'bin')})`;
+    } else if (isConflictDriver) {
+      valStr = `${ownStr} (配線: X [${X_CAUSE_LABELS.conflict}])`;
+    } else if (xCause && dominantState(val) === BIT_X) {
+      valStr = `${ownStr} [${X_CAUSE_LABELS[xCause]}]`;
+    } else {
+      valStr = ownStr;
+    }
+  }
   const text = `${hit.pin.name} (${hit.pin.bitWidth}b) = ${valStr}`;
 
   ctx.save();

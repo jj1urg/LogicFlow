@@ -256,8 +256,10 @@ export interface SequentialState {
 
 /** Computed real-time signal snapshot for rendering */
 export interface SimulationSnapshot {
-  /** Value per pin key `${gateId}:${pinId}` */
+  /** Value per pin key `${gateId}:${pinId}` (resolved net value) */
   pinValues: Record<string, LogicValue>;
+  /** Output pin's own driven value before bus resolution (used to show Z on disabled TRIBUF and own 0/1 on bus conflicts) */
+  pinDrivenValues?: Record<string, LogicValue>;
   /** Value per wireId */
   wireValues: Record<string, LogicValue>;
   /** Value per named net / tunnel */

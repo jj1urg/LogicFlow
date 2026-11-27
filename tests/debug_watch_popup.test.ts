@@ -230,13 +230,25 @@ describe('Live Subcircuit Popup & Signal Watch / Waveform Helpers', () => {
     const triGates = topDoc.gates.filter((g) => g.type === 'TRIBUF');
     expect(triGates).toHaveLength(2);
 
-    // Both share the bus wire resolved to 1, but the disabled TRIBUF records its own driven output as Z!
-    const ownStates = triGates.map((g) => snap.gateInternalValues[g.id]?.bits[0]);
+    // Both share the bus wire resolved to 1, but pinDrivenValues preserves each driver's own output (1 and Z)!
+    const ownStates = triGates.map((g) => snap.pinDrivenValues?.[`${g.id}:out`]?.bits[0]);
     expect(ownStates).toContain(BIT_1);
     expect(ownStates).toContain(BIT_Z);
     for (const g of triGates) {
       expect(snap.pinValues[`${g.id}:out`]?.bits[0]).toBe(BIT_1);
       expect(getDefaultWatchPin(g, proj)?.pinId).toBe('out');
+    }
+
+    // Now enable BOTH TRIBUFs with opposite values (1 vs 0) -> wire resolves to conflict X,
+    // while pinDrivenValues keeps each OUT pin's own driven value (1 and 0)!
+    inEnB.props.value = '1';
+    const conflictSnap = simulateCircuit(topDoc, proj, seq);
+    const conflictOwn = triGates.map((g) => conflictSnap.pinDrivenValues?.[`${g.id}:out`]?.bits[0]);
+    expect(conflictOwn).toContain(BIT_1);
+    expect(conflictOwn).toContain(BIT_0);
+    for (const g of triGates) {
+      expect(conflictSnap.pinValues[`${g.id}:out`]?.bits[0]).toBe(BIT_X);
+      expect(conflictSnap.pinXCauses?.[`${g.id}:out`]).toBe('conflict');
     }
 
     // Ambiguous multi-output blocks must return null from getDefaultWatchPin

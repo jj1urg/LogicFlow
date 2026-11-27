@@ -328,6 +328,7 @@ export function simulateCompiledCircuit(
 
   const gateInternalValues: Record<string, LogicValue> = {};
   const subSnapshots: Record<string, SimulationSnapshot> = {};
+  const pinDrivenValues: Record<string, LogicValue> = {};
 
   // Helper to read an input pin's current net value resized to pin's width from an arbitrary netValue map
   const makeReadPin =
@@ -863,7 +864,9 @@ export function simulateCompiledCircuit(
     const netOscSubDriven = new Set<string>();
 
     const drivePin = (gateId: string, pinId: string, val: LogicValue) => {
-      const netId = graph.pinToNet.get(pinKey(gateId, pinId));
+      const pk = pinKey(gateId, pinId);
+      pinDrivenValues[pk] = val;
+      const netId = graph.pinToNet.get(pk);
       if (!netId) return;
       let list = netDrivers.get(netId);
       if (!list) {
@@ -1060,13 +1063,15 @@ export function simulateCompiledCircuit(
         }
       }
 
-      // Refresh gateInternalValues / pendingNextReg / subSnapshots once with the newly resolved net values
+      // Refresh gateInternalValues / pendingNextReg / subSnapshots / pinDrivenValues once with the newly resolved net values
       if (anyResolved && !oscillating) {
         const netStubDriven = new Set<string>();
         const netOscSubDriven = new Set<string>();
-        const noopDrive = () => {};
+        const recordDrive = (gateId: string, pinId: string, val: LogicValue) => {
+          pinDrivenValues[pinKey(gateId, pinId)] = val;
+        };
         for (const gate of circuit.gates) {
-          evaluateGate(gate, readPin, noopDrive, true, netStubDriven, netOscSubDriven);
+          evaluateGate(gate, readPin, recordDrive, true, netStubDriven, netOscSubDriven);
         }
       }
     }
@@ -1200,6 +1205,7 @@ export function simulateCompiledCircuit(
 
   return {
     pinValues,
+    pinDrivenValues,
     wireValues,
     netValues: namedNetValues,
     pinXCauses,

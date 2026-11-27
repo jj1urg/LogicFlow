@@ -279,18 +279,43 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
     });
   }, [circuit.gates, project]);
 
-  // Auto fit when circuit tab changes or fitTrigger increments
+  // Preserve per-circuit tab zoom/pan in session memory; auto-fit only on first visit or explicit Fit (F)
+  const savedViewportsRef = useRef<Map<string, Viewport>>(new Map());
   const lastCircuitIdRef = useRef<string>('');
+  const lastFitTriggerRef = useRef<number>(fitTrigger);
+  const zoomToFitRef = useRef(zoomToFit);
+  zoomToFitRef.current = zoomToFit;
+
+  // Save current tab's viewport whenever user pans/zooms
+  useEffect(() => {
+    if (lastCircuitIdRef.current === circuit.id) {
+      savedViewportsRef.current.set(circuit.id, vp);
+    }
+  }, [circuit.id, vp]);
+
+  // Restore saved viewport on tab switch, or fit once on first visit to a tab
   useEffect(() => {
     if (lastCircuitIdRef.current !== circuit.id) {
+      if (lastCircuitIdRef.current) {
+        savedViewportsRef.current.set(lastCircuitIdRef.current, viewportRef.current);
+      }
       lastCircuitIdRef.current = circuit.id;
-      zoomToFit();
+      const saved = savedViewportsRef.current.get(circuit.id);
+      if (saved) {
+        setVp(saved);
+      } else {
+        zoomToFitRef.current();
+      }
     }
-  }, [circuit.id, zoomToFit]);
+  }, [circuit.id, viewportRef]);
 
+  // Only run zoomToFit when fitTrigger actually increments (never on unrelated gate/project updates!)
   useEffect(() => {
-    if (fitTrigger > 0) zoomToFit();
-  }, [fitTrigger, zoomToFit]);
+    if (fitTrigger !== lastFitTriggerRef.current) {
+      lastFitTriggerRef.current = fitTrigger;
+      if (fitTrigger > 0) zoomToFitRef.current();
+    }
+  }, [fitTrigger]);
 
   // Escape cancels wiring; Space enables temporary hand panning while held
   useEffect(() => {

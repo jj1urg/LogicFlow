@@ -73,13 +73,20 @@ export const LiveSubcircuitPopup: React.FC<LiveSubcircuitPopupProps> = ({
 
   const pathKey = gatePath.join('/');
 
+  const resolvedCircuitId = resolved?.circuit.id ?? '';
+  const resolvedRef = useRef(resolved);
+  resolvedRef.current = resolved;
+  const projectRef = useRef(project);
+  projectRef.current = project;
+
   const fitCircuitToPopup = useCallback(() => {
     const wrap = canvasWrapRef.current;
-    if (!wrap || !resolved) return;
+    const curResolved = resolvedRef.current;
+    if (!wrap || !curResolved) return;
     const rect = wrap.getBoundingClientRect();
     if (rect.width < 10 || rect.height < 10) return;
 
-    const gates = resolved.circuit.gates;
+    const gates = curResolved.circuit.gates;
     if (gates.length === 0) {
       viewportRef.current = { x: rect.width / 2, y: rect.height / 2, zoom: 1 };
       setZoomPct(100);
@@ -92,7 +99,7 @@ export const LiveSubcircuitPopup: React.FC<LiveSubcircuitPopupProps> = ({
     let maxX = -Infinity;
     let maxY = -Infinity;
     for (const g of gates) {
-      const b = getGateBounds(g, project);
+      const b = getGateBounds(g, projectRef.current);
       if (b.x < minX) minX = b.x;
       if (b.y < minY) minY = b.y;
       if (b.x + b.width > maxX) maxX = b.x + b.width;
@@ -114,13 +121,14 @@ export const LiveSubcircuitPopup: React.FC<LiveSubcircuitPopupProps> = ({
     };
     setZoomPct(Math.round(zoom * 100));
     setRenderTick((t) => t + 1);
-  }, [resolved, project]);
+  }, []);
 
-  // Auto-fit when target instance path changes
+  // Auto-fit ONLY when opening or navigating to a different instance path (never on live signal updates!)
   useEffect(() => {
+    if (!resolvedCircuitId) return;
     const id = requestAnimationFrame(() => fitCircuitToPopup());
     return () => cancelAnimationFrame(id);
-  }, [pathKey, fitCircuitToPopup]);
+  }, [pathKey, resolvedCircuitId, fitCircuitToPopup]);
 
   // Track popup container resizes so canvas redraws sharply
   useEffect(() => {
