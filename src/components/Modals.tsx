@@ -7,6 +7,7 @@ import {
   HdlSourceFile,
   ImportOptions,
   inferTopModuleName,
+  inspectHdlSourceFile,
   listModuleNamesInFiles,
 } from '../core/hdl';
 import { SAMPLE_VERILOG_SNIPPET } from '../core/samples';
@@ -52,14 +53,34 @@ export const VerilogImportModal: React.FC<{
         content: await f.text(),
       })),
     ).then((loaded) => {
+      const accepted: HdlSourceFile[] = [];
+      const skippedMsgs: string[] = [];
+      for (const item of loaded) {
+        const check = inspectHdlSourceFile(item);
+        if (check.valid) {
+          accepted.push(item);
+        } else {
+          skippedMsgs.push(`"${item.name}" を除外しました（${check.reason ?? '未対応形式'}）`);
+        }
+      }
+
+      if (accepted.length === 0) {
+        setError(
+          skippedMsgs.length === 1
+            ? skippedMsgs[0]
+            : `選択された ${loaded.length} ファイルはいずれも有効な Verilog/SystemVerilog ではありませんでした（${skippedMsgs.slice(0, 3).join(' / ')}）。`,
+        );
+        return;
+      }
+
       setFiles((prev) => {
         if (!append) {
           setActiveIdx(0);
-          return loaded;
+          return accepted;
         }
         // Replace existing files with the same name, append new ones
         const next = [...prev];
-        for (const item of loaded) {
+        for (const item of accepted) {
           const dupIdx = next.findIndex((x) => x.name === item.name);
           if (dupIdx !== -1) next[dupIdx] = item;
           else next.push(item);
@@ -68,6 +89,7 @@ export const VerilogImportModal: React.FC<{
         return next;
       });
       setError(null);
+      setWarnings(skippedMsgs);
     });
   };
 

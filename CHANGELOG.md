@@ -6,6 +6,22 @@
 
 ---
 
+## 2026-11-28 — v0.15-r1.0 大規模 HDL インポートのフリーズ解消・非 HDL ファイル自動リジェクト強化・Stub 端子方向推論と右寄せ配置改善
+
+### 実施内容
+
+1. **大規模 HDL インポート時のフリーズ解消（配線ルータ・交差/分岐検出の抜本高速化）** (`src/core/routing.ts`, `src/core/hdl.ts`):
+   - `createBatchWireRouter` を新設し、一括自動配線時に全ゲートの障害物グリッドを 1 回だけ事前構築・既設配線をインクリメンタル登録（数値パックキー採用で文字列アロケーションを排除）することで、数百ゲート・1,000 本超の配線を持つパイプライン回路（16 段 CORDIC 等）でも 2 分超のフリーズから数百ミリ秒へ劇的に高速化しました。
+   - `hasInterveningGate` の障害物判定を X/Y 範囲事前絞り込みで高速化し、描画用の `findOrthogonalCrossings`（ソート＋二分探索）および `findWireJunctions`（空間グリッドバケット）も O(W^2) から O(W log W) へ最適化しました。
+2. **非 HDL ファイルのリジェクト強化 & 未対応構文の安全ハンドリング** (`src/core/hdl.ts`, `src/components/Modals.tsx`):
+   - `inspectHdlSourceFile` を追加し、Vivado IP 設定ファイル（`.xci` / `.xci.txt` の XML）・JSON・バイナリ・サイズ超過・`module ... endmodule` を含まないファイルをインポート前段で安全に検出・除外し、明確な通知メッセージを表示するよう強化しました（除外ファイルは `hdlProject.files` へ保存しません）。
+   - `buildExprGate` に再帰深度・式長・モジュール当たりゲート数の安全上限を追加し、定数シフト (`<<`, `>>`, `<<<`, `>>>`)・単項マイナス・`localparam signed` リテラル評価に対応するとともに、未対応の乗除算 (`*`, `/`, `%`) やユーザー関数呼び出しは警告付きで安全に定数 `X` へフォールバックするよう改善しました。
+3. **外部仮モジュール (Stub) の端子方向推論改善 & 多 `MODULE_OUT` 接続モジュールの右寄せ配置修正** (`src/core/hdl.ts`):
+   - `classifyStubPortByName` で `aclk` / `SysClk*` / `ADC_SamplingClk` 等のクロック入力・`clk_out*` 出力・AXI-Stream (`m_axis_*` / `s_axis_*`) 規約を識別するよう改善し、複数 Stub が共有するクロックネット（`clk_out1` 等）で消費側 Stub のクロック入力が誤って `out` 扱いされる不具合を修正しました。
+   - `autoLayoutGates` の右寄せ（ALAP）判定でグローバルクロック／リセットネットのファンアウトを除外し、クロック生成元（`clk_wiz_0` 等）を左側に維持したまま、多数の `MODULE_OUT` に接続する外部モジュール（`ZmodScopeController_0` 等）を確実に `MODULE_OUT` のすぐ左隣へ配置するよう修正しました。
+4. **開発管理・テスト整備** (`.gitignore`, `tests/hdl_advanced.test.ts`, `docs/features.md`):
+   - `docs/test_hdl/fm_hdl/` を `.gitignore` へ追加し、`docs/test_hdl/fm_ip/` へのリネームにテストパスを追従させるとともに、Stub 方向推論＋右寄せ配置・非 HDL リジェクト・大規模 16 段パイプライン高速インポート＆シミュレーションの回帰テストを追加しました。
+
 ## 2026-11-27 — v0.15-r0.0 配線維持のコンポーネント差し替え機能・`instruction_decoder` 修正＆定数共有・複雑 `always_ff` (CICフィルタ等) 合成対応
 
 ### 実施内容

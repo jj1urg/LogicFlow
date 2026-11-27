@@ -5,3 +5,4 @@ dist/
 .DS_Store
 .vitest/
 tsconfig.tsbuildinfo
+docs/test_hdl/fm_hdl/

@@ -8,12 +8,17 @@ import {
   importVerilogFilesToCircuits,
   importVerilogToCircuits,
   inferTopModuleName,
+  inspectHdlSourceFile,
   listModuleNamesInFiles,
   resynthesizeCircuitFromHdl,
   resynthesizeHdlProject,
 } from '../src/core/hdl';
 import { BIT_0, BIT_1, BIT_X, BIT_Z, fromInt, LogicValue, toUnsignedInt } from '../src/core/logic4';
-import { rerouteWiresForGates } from '../src/core/routing';
+import {
+  findOrthogonalCrossings,
+  findWireJunctions,
+  rerouteWiresForGates,
+} from '../src/core/routing';
 import { createEmptySequentialState, simulateCircuit } from '../src/core/simulator';
 import { CircuitDocument, ProjectDocument } from '../src/core/types';
 
@@ -1314,9 +1319,9 @@ endmodule`;
     }
   });
 
-  it('19. synthesizes complex SystemVerilog always_ff with $clog2, for-loops, 1D/2D arrays, and indexed part-select (docs/test_hdl/fm/cic_decimator.sv)', () => {
+  it('19. synthesizes complex SystemVerilog always_ff with $clog2, for-loops, 1D/2D arrays, and indexed part-select (docs/test_hdl/fm_ip/cic_decimator.sv)', () => {
     const src = readFileSync(
-      join(process.cwd(), 'docs', 'test_hdl', 'fm', 'cic_decimator.sv'),
+      join(process.cwd(), 'docs', 'test_hdl', 'fm_ip', 'cic_decimator.sv'),
       'utf-8',
     );
     const res = importVerilogToCircuits(src);
@@ -1411,5 +1416,205 @@ endmodule`;
     expect(orGate.x).toBe(andGate.x);
     expect(orGate.x).toBeGreaterThan(xorGate.x);
     expect(orGate.x).toBeLessThan(outDirect.x);
+  });
+
+  it('21. classifies shared clock stub inputs accurately and right-aligns multi-MODULE_OUT stub modules next to MODULE_OUT', () => {
+    const src = `
+      module scope_top (
+        input  wire clk_in1_0,
+        input  wire reset_n,
+        input  wire [13:0] dZmodADC_Data,
+        output wire ZmodAdcClkIn_p,
+        output wire ZmodAdcClkIn_n,
+        output wire sZmodADC_CS,
+        output wire sZmodADC_Sclk,
+        output wire sZmodCh1CouplingH,
+        output wire sZmodCh1CouplingL,
+        output wire sZmodCh2CouplingH,
+        output wire sZmodCh2CouplingL,
+        output wire [13:0] dac_out
+      );
+        wire clk_out1, clk_out2;
+        wire [31:0] adc_data;
+        wire [31:0] stage1_out, stage2_out;
+        reg [15:0] reg_a, reg_b;
+
+        always @(posedge clk_out1) begin
+          reg_a <= adc_data[15:0];
+          reg_b <= reg_a + 16'd1;
+        end
+
+        clk_wiz_0 u_clk (
+          .clk_in1(clk_in1_0),
+          .resetn(reset_n),
+          .clk_out1(clk_out1),
+          .clk_out2(clk_out2)
+        );
+
+        ZmodScopeController_0 u_scope (
+          .SysClk100(clk_out1),
+          .ADC_SamplingClk(clk_out1),
+          .ADC_InClk(clk_out2),
+          .aRst_n(reset_n),
+          .dZmodADC_Data(dZmodADC_Data),
+          .cDataAxisTdata(adc_data),
+          .ZmodAdcClkIn_p(ZmodAdcClkIn_p),
+          .ZmodAdcClkIn_n(ZmodAdcClkIn_n),
+          .sZmodADC_CS(sZmodADC_CS),
+          .sZmodADC_Sclk(sZmodADC_Sclk),
+          .sZmodCh1CouplingH(sZmodCh1CouplingH),
+          .sZmodCh1CouplingL(sZmodCh1CouplingL),
+          .sZmodCh2CouplingH(sZmodCh2CouplingH),
+          .sZmodCh2CouplingL(sZmodCh2CouplingL)
+        );
+
+        dsp_stage_a u_s1 (
+          .aclk(clk_out1),
+          .s_axis_data_tdata(adc_data),
+          .m_axis_data_tdata(stage1_out)
+        );
+
+        dsp_stage_b u_s2 (
+          .aclk(clk_out1),
+          .s_axis_data_tdata(stage1_out),
+          .m_axis_data_tdata(stage2_out)
+        );
+
+        dac_ctrl u_dac (
+          .SysClk100(clk_out1),
+          .cDataAxisTdata(stage2_out),
+          .dZmodDAC_Data(dac_out)
+        );
+      endmodule
+    `;
+    const res = importVerilogToCircuits(src);
+    const top = res.circuits.find((c) => c.id === res.topCircuitId)!;
+
+    // Shared clock consumer pins must be inferred as 'in', while clk_wiz.clk_out1 is 'out'
+    const scopeStub = res.circuits.find((c) => c.name.includes('ZmodScopeController_0'))!;
+    expect(scopeStub.stubPorts?.find((p) => p.name === 'SysClk100')?.dir).toBe('in');
+    expect(scopeStub.stubPorts?.find((p) => p.name === 'ADC_SamplingClk')?.dir).toBe('in');
+    expect(scopeStub.stubPorts?.find((p) => p.name === 'ZmodAdcClkIn_p')?.dir).toBe('out');
+
+    const clkWizStub = res.circuits.find((c) => c.name.includes('clk_wiz_0'))!;
+    expect(clkWizStub.stubPorts?.find((p) => p.name === 'clk_out1')?.dir).toBe('out');
+    expect(clkWizStub.stubPorts?.find((p) => p.name === 'clk_in1')?.dir).toBe('in');
+
+    // ZmodScopeController_0 (driving 8 MODULE_OUT ports vs 1 internal wire) must be placed right beside MODULE_OUT!
+    const xs = [...new Set(top.gates.map((g) => g.x))].sort((a, b) => a - b);
+    const scopeGate = top.gates.find((g) => g.label.includes('u_scope'))!;
+    const dacGate = top.gates.find((g) => g.label.includes('u_dac'))!;
+    const clkWizGate = top.gates.find((g) => g.label.includes('u_clk'))!;
+    expect(xs.indexOf(scopeGate.x)).toBe(xs.length - 2);
+    expect(xs.indexOf(dacGate.x)).toBe(xs.length - 2);
+    // Global clock source stays on the left side (column 1) rather than being pulled right
+    expect(xs.indexOf(clkWizGate.x)).toBe(1);
+  });
+
+  it('22. safely rejects non-HDL files (Vivado .xci XML, JSON, binary, plain text) without hanging', () => {
+    const xciXml = `<?xml version="1.0" encoding="UTF-8"?>
+<spirit:design xmlns:spirit="http://www.spiritconsortium.org/XMLSchema/SPIRIT/1685-2009">
+  <spirit:componentInstances><spirit:instanceName>clk_wiz_0</spirit:instanceName></spirit:componentInstances>
+</spirit:design>`;
+    const validMod = `module inv1(input wire a, output wire y); assign y = ~a; endmodule`;
+
+    expect(inspectHdlSourceFile({ name: 'clk_wiz_0.xci.txt', content: xciXml }).valid).toBe(false);
+    expect(inspectHdlSourceFile({ name: 'cfg.json', content: '{"a": 1}' }).valid).toBe(false);
+    expect(inspectHdlSourceFile({ name: 'bin.dat', content: 'abc\0def' }).valid).toBe(false);
+    expect(inspectHdlSourceFile({ name: 'inv1.v.txt', content: validMod }).valid).toBe(true);
+
+    // Mixed batch keeps valid Verilog files, excludes .xci XML from hdlProject.files, and emits warnings
+    const res = importVerilogFilesToCircuits([
+      { name: 'clk_wiz_0.xci.txt', content: xciXml },
+      { name: 'inv1.v.txt', content: validMod },
+    ]);
+    expect(res.hdlProject.topModuleName).toBe('inv1');
+    expect(res.hdlProject.files.map((f) => f.name)).toEqual(['inv1.v.txt']);
+    expect(res.warnings.some((w) => w.includes('clk_wiz_0.xci.txt'))).toBe(true);
+
+    // Pure non-HDL input throws a clear error
+    expect(() =>
+      importVerilogFilesToCircuits([{ name: 'clk_wiz_0.xci.txt', content: xciXml }]),
+    ).toThrow(/有効な Verilog\/SystemVerilog ファイルが見つかりませんでした/);
+  });
+
+  it('23. synthesizes, batch-routes, and simulates large 16-stage pipelined CORDIC-style for-loops fast without freezing', () => {
+    const cordicLike = `
+      module cordic_pipe (
+        input  wire clk,
+        input  wire rst,
+        input  wire ce,
+        input  wire signed [15:0] x_in,
+        input  wire signed [15:0] y_in,
+        output wire [15:0] angle_out
+      );
+        parameter ITER = 16;
+        localparam signed [16:0] PI_SCALED  = 17'sd32768;
+        localparam signed [16:0] NPI_SCALED = -17'sd32768;
+
+        function signed [15:0] lut;
+          input [4:0] idx;
+          begin
+            lut = 16'sd1;
+          end
+        endfunction
+
+        reg signed [17:0] x_pipe [0:ITER];
+        reg signed [17:0] y_pipe [0:ITER];
+        reg signed [16:0] z_pipe [0:ITER];
+        integer k;
+
+        assign angle_out = z_pipe[ITER][15:0];
+
+        always @(posedge clk) begin
+          if (!rst) begin
+            for (k = 0; k <= ITER; k = k + 1) begin
+              x_pipe[k] <= 0;
+              y_pipe[k] <= 0;
+              z_pipe[k] <= 0;
+            end
+          end else if (ce) begin
+            x_pipe[0] <= -{{2{x_in[15]}}, x_in};
+            y_pipe[0] <= {{2{y_in[15]}}, y_in};
+            z_pipe[0] <= (y_in[15] == 0) ? PI_SCALED : NPI_SCALED;
+
+            for (k = 0; k < ITER; k = k + 1) begin
+              if (y_pipe[k][17] == 0) begin
+                x_pipe[k+1] <= x_pipe[k] + (y_pipe[k] >>> k);
+                y_pipe[k+1] <= y_pipe[k] - (x_pipe[k] >>> k);
+                z_pipe[k+1] <= z_pipe[k] + lut(k);
+              end else begin
+                x_pipe[k+1] <= x_pipe[k] - (y_pipe[k] >>> k);
+                y_pipe[k+1] <= y_pipe[k] + (x_pipe[k] >>> k);
+                z_pipe[k+1] <= z_pipe[k] - lut(k);
+              end
+            end
+          end
+        end
+      endmodule
+    `;
+
+    const t0 = Date.now();
+    const res = importVerilogToCircuits(cordicLike);
+    const importMs = Date.now() - t0;
+    const top = res.circuits.find((c) => c.id === res.topCircuitId)!;
+
+    expect(importMs).toBeLessThan(3000);
+    expect(top.gates.length).toBeGreaterThan(200);
+    expect(top.wires.length).toBeGreaterThan(400);
+    expect(res.warnings.some((w) => w.includes('lut'))).toBe(true);
+
+    // Ensure crossing/junction detection & simulation stay responsive on large wire counts
+    const t1 = Date.now();
+    findOrthogonalCrossings(top.wires);
+    findWireJunctions(top.wires);
+    const geomMs = Date.now() - t1;
+    expect(geomMs).toBeLessThan(1000);
+
+    const proj = makeProj(res.circuits, top.id);
+    const seq = createEmptySequentialState();
+    const t2 = Date.now();
+    simulateCircuit(top, proj, seq);
+    expect(Date.now() - t2).toBeLessThan(500);
   });
 });

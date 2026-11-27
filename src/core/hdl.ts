@@ -9,7 +9,7 @@ import {
   snapToGrid,
 } from './catalog';
 import { fromLiteral, toBinString } from './logic4';
-import { routeWire } from './routing';
+import { createBatchWireRouter } from './routing';
 import {
   CircuitDocument,
   GateInstance,
@@ -179,6 +179,89 @@ function pickBestTopModule<T extends { name: string; instances: { moduleName: st
   return best;
 }
 
+export interface HdlFileInspection {
+  file: HdlSourceFile;
+  valid: boolean;
+  reason?: string;
+}
+
+const MAX_HDL_FILE_BYTES = 2 * 1024 * 1024; // 2MB per file safety cap
+const NON_HDL_EXT_RE =
+  /\.(?:xci|xml|xdc|bd|xpr|dcp|bit|ltx|json|yaml|yml|toml|csv|tsv|md|html|htm|css|js|ts|py|c|cpp|h|hpp|pdf|png|jpe?g|gif|svg|zip|tar|gz)(?:\.txt)?$/i;
+
+/**
+ * Validate whether a source file contains supported Verilog/SystemVerilog module definitions
+ * and reject non-HDL formats (Vivado .xci XML, JSON, binary, oversized files, etc.) cleanly
+ * before running heavy parsing/synthesis.
+ */
+export function inspectHdlSourceFile(file: HdlSourceFile): HdlFileInspection {
+  const content = file.content ?? '';
+  const trimmed = content.trim();
+  if (!trimmed) {
+    return { file, valid: false, reason: 'ファイルが空です' };
+  }
+  if (content.length > MAX_HDL_FILE_BYTES) {
+    return {
+      file,
+      valid: false,
+      reason: `ファイルサイズが大きすぎます（${Math.round(content.length / 1024)}KB > 2048KB）`,
+    };
+  }
+
+  // Binary / NUL byte detection on prefix
+  const sampleLen = Math.min(content.length, 2048);
+  let ctrlCount = 0;
+  for (let i = 0; i < sampleLen; i++) {
+    const code = content.charCodeAt(i);
+    if (code === 0) {
+      return { file, valid: false, reason: 'バイナリファイルのため解釈できません' };
+    }
+    if (code < 32 && code !== 9 && code !== 10 && code !== 13) {
+      ctrlCount++;
+    }
+  }
+  if (sampleLen > 0 && ctrlCount / sampleLen > 0.05) {
+    return {
+      file,
+      valid: false,
+      reason: 'バイナリまたは未対応エンコーディングのため解釈できません',
+    };
+  }
+
+  // Fast XML / Vivado IP-XACT / HTML / JSON rejection
+  const head = trimmed.slice(0, 256);
+  if (/^<\?xml\b|^<spirit:|^<ipxact:|^<!doctype\b|^<html\b|^<project\b/i.test(head)) {
+    return {
+      file,
+      valid: false,
+      reason: 'XML / Vivado IP設定ファイル（.xci 等）であり Verilog/SystemVerilog ではありません',
+    };
+  }
+  if ((head.startsWith('{') || head.startsWith('[')) && !/\bmodule\s+\w+/.test(content)) {
+    return { file, valid: false, reason: 'JSON / 非HDLデータのため解釈できません' };
+  }
+
+  const clean = stripCommentsAndDirectives(content);
+  const hasModuleEnd =
+    /\bmodule\s+\w+/.test(clean) && clean.includes('endmodule') && /\bendmodule\b/.test(clean);
+  if (!hasModuleEnd) {
+    if (NON_HDL_EXT_RE.test(file.name.trim())) {
+      return {
+        file,
+        valid: false,
+        reason: '未対応のファイル形式（Verilog/SystemVerilog 以外）です',
+      };
+    }
+    return {
+      file,
+      valid: false,
+      reason: 'Verilog/SystemVerilog の module ... endmodule 定義が見つかりません',
+    };
+  }
+
+  return { file, valid: true };
+}
+
 /** Quickly list all module names defined across one or more HDL source files (for top-module selection UI) */
 export function listModuleNamesInFiles(
   files: HdlSourceFile[],
@@ -186,6 +269,7 @@ export function listModuleNamesInFiles(
   const seen = new Set<string>();
   const list: { name: string; fileName: string }[] = [];
   for (const f of files) {
+    if (!inspectHdlSourceFile(f).valid) continue;
     const clean = stripCommentsAndDirectives(f.content);
     const re = /\bmodule\s+(\w+)\b/g;
     let m: RegExpExecArray | null;
@@ -205,7 +289,7 @@ export function inferTopModuleName(files: HdlSourceFile[]): string | null {
   const warnings: string[] = [];
   const all: ParsedModule[] = [];
   for (const f of files) {
-    if (!f.content.trim()) continue;
+    if (!inspectHdlSourceFile(f).valid) continue;
     all.push(...parseModules(f.content, warnings));
   }
   if (all.length === 0) return null;
@@ -361,9 +445,26 @@ function extractOriginalModuleSources(rawSource: string): Map<string, string> {
   return result;
 }
 
-/** Safely evaluate constant integer expressions like "4", "WIDTH-1", "N / 2", "$clog2(RATIO)" without eval */
+/** Safely evaluate constant integer expressions like "4", "WIDTH-1", "N / 2", "$clog2(RATIO)", "-17'sd32768" without eval */
 function evalParamExpr(expr: string, params: Map<string, number>): number | null {
   let s = expr.trim();
+  // Normalize Verilog sized numeric literals (e.g. 17'sd32768, 8'hFF, 4'b1010) to plain integers
+  s = s.replace(
+    /\b(?:\d+)?'s?([bhdo])([0-9a-f_]+)\b/gi,
+    (full, baseRaw: string, digitsRaw: string) => {
+      const digits = digitsRaw.replace(/_/g, '');
+      const radix =
+        baseRaw.toLowerCase() === 'h'
+          ? 16
+          : baseRaw.toLowerCase() === 'b'
+            ? 2
+            : baseRaw.toLowerCase() === 'o'
+              ? 8
+              : 10;
+      const v = parseInt(digits, radix);
+      return Number.isFinite(v) ? String(v) : full;
+    },
+  );
   // Resolve SystemVerilog $clog2(...) calls from innermost outward
   for (let pass = 0; pass < 8 && /\$clog2\s*\(/.test(s); pass++) {
     const next = s.replace(/\$clog2\s*\(([^()]+)\)/g, (_, inner: string) => {
@@ -1317,9 +1418,9 @@ function parseModules(source: string, warnings: string[]): ParsedModule[] {
     const params = new Map<string, number>();
     parseParamBlock(paramHeaderRaw, params);
 
-    // Pre-scan body parameter / localparam declarations
+    // Pre-scan body parameter / localparam declarations (including `signed` / `unsigned`)
     const paramBodyRegex =
-      /\b(?:parameter|localparam)\s+(?:(?:int|integer|logic|bit)\s+)?(?:\[[^\]]+\]\s+)?(\w+)\s*=\s*([^;]+);/g;
+      /\b(?:parameter|localparam)\s+(?:(?:int|integer|logic|bit|signed|unsigned)\s+)*(?:\[[^\]]+\]\s+)?(\w+)\s*=\s*([^;]+);/g;
     let pm: RegExpExecArray | null;
     while ((pm = paramBodyRegex.exec(rawBody)) !== null) {
       const val = evalParamExpr(pm[2], params);
@@ -1579,6 +1680,7 @@ interface NetEntry {
 }
 
 interface SynthContext {
+  modName: string;
   gates: GateInstance[];
   netPinMap: Map<string, NetEntry>;
   netWidths: Map<string, number>;
@@ -1588,6 +1690,18 @@ interface SynthContext {
   rangeSplitCache: Map<string, string>;
   constCache: Map<string, string>;
   exprCache: Map<string, string>;
+  warnings: string[];
+  warnedIssues: Set<string>;
+}
+
+const MAX_GATES_PER_MODULE = 2500;
+const MAX_EXPR_DEPTH = 48;
+const MAX_EXPR_LENGTH = 8192;
+
+function warnOnce(ctx: SynthContext, key: string, message: string): void {
+  if (ctx.warnedIssues.has(key)) return;
+  ctx.warnedIssues.add(key);
+  ctx.warnings.push(message);
 }
 
 function ensureNetEntry(map: Map<string, NetEntry>, name: string): NetEntry {
@@ -1718,11 +1832,18 @@ function findTopLevelOp(expr: string, ops: string[]): { idx: number; op: string 
       if (op === '&' && (prev === '&' || next === '&' || prev === '~')) continue;
       if (op === '|' && (prev === '|' || next === '|' || prev === '~')) continue;
       if (op === '^' && (prev === '~' || next === '~')) continue;
-      if (op === '<' && (next === '=' || next === '<')) continue;
-      if (op === '>' && (next === '=' || next === '>')) continue;
+      if (op === '<' && (prev === '<' || next === '=' || next === '<')) continue;
+      if (op === '>' && (prev === '>' || next === '=' || next === '>')) continue;
+      if (op === '<<' && (prev === '<' || next === '<')) continue;
+      if (op === '>>' && (prev === '>' || next === '>')) continue;
       if (op === '==' && (prev === '=' || next === '=' || prev === '!')) continue;
       if (op === '!=' && next === '=') continue;
-      if (op === '-' && i === 0) continue;
+      if (op === '-') {
+        // Skip unary minus (at start or immediately after another operator)
+        let j = i - 1;
+        while (j >= 0 && /\s/.test(expr[j])) j--;
+        if (j < 0 || /[+\-*/%&|^~!?:=<>(,[{]/.test(expr[j])) continue;
+      }
       return { idx: i, op };
     }
   }
@@ -2078,10 +2199,28 @@ function getOrCreateConstNet(
   return tempNet;
 }
 
-/** Synthesize boolean/arithmetic/comparison/ternary/concat/slice expression in `assign` or `always` into gates */
-function buildExprGate(exprRaw: string, ctx: SynthContext, bitWidth: number): string {
+/** Synthesize boolean/arithmetic/comparison/ternary/concat/slice/shift expression in `assign` or `always` into gates */
+function buildExprGate(exprRaw: string, ctx: SynthContext, bitWidth: number, depth = 0): string {
   const expr = stripOuterParens(exprRaw);
   if (!expr) return expr;
+
+  // Safety guards against pathological expression depth, huge expanded strings, or gate explosion
+  if (depth > MAX_EXPR_DEPTH || expr.length > MAX_EXPR_LENGTH) {
+    warnOnce(
+      ctx,
+      'expr_limit',
+      `[${ctx.modName}] 非常に複雑または長大な式を検出したため、一部を定数 X として安全に省略しました。`,
+    );
+    return getOrCreateConstNet(bitWidth, `0b${'x'.repeat(bitWidth)}`, `${bitWidth}'bx`, ctx);
+  }
+  if (ctx.gates.length >= MAX_GATES_PER_MODULE) {
+    warnOnce(
+      ctx,
+      'gate_limit',
+      `[${ctx.modName}] 合成ゲート数が上限（${MAX_GATES_PER_MODULE}）に達したため、残りの式を安全に省略しました。`,
+    );
+    return getOrCreateConstNet(bitWidth, `0b${'x'.repeat(bitWidth)}`, `${bitWidth}'bx`, ctx);
+  }
 
   // Unspecified case fallback -> X constant
   if (expr === '__case_undef__') {
@@ -2096,7 +2235,7 @@ function buildExprGate(exprRaw: string, ctx: SynthContext, bitWidth: number): st
     return getOrCreateConstNet(w, val, expr, ctx);
   }
 
-  // Parameter constant identifier or compile-time constant expression (e.g. `RATIO - 1`, `STAGES - 1`)
+  // Parameter constant identifier or compile-time constant expression (e.g. `RATIO - 1`, `STAGES - 1`, `-17'sd32768`)
   if (/^\w+$/.test(expr) && ctx.params.has(expr) && !ctx.netWidths.has(expr)) {
     const pVal = ctx.params.get(expr)!;
     return getOrCreateConstNet(bitWidth, String(pVal), expr, ctx);
@@ -2122,7 +2261,7 @@ function buildExprGate(exprRaw: string, ctx: SynthContext, bitWidth: number): st
       const lsbFirst = [...msbFirst].reverse();
       const widths = lsbFirst.map((item) => inferExprWidth(item, ctx.netWidths, 1, ctx.params));
       const totalW = widths.reduce((a, b) => a + b, 0);
-      const srcNets = lsbFirst.map((item, idx) => buildExprGate(item, ctx, widths[idx]));
+      const srcNets = lsbFirst.map((item, idx) => buildExprGate(item, ctx, widths[idx], depth + 1));
       if (srcNets.length === 1) return memo(srcNets[0]);
 
       const splId = uid('cat');
@@ -2156,6 +2295,23 @@ function buildExprGate(exprRaw: string, ctx: SynthContext, bitWidth: number): st
     return expr;
   }
 
+  // Unsupported user function call (e.g. `atan_lut(0)`, `sat16(z_final)`) -> warn cleanly & return X
+  const fnCallM = expr.match(/^(\$?[a-zA-Z_]\w*)\s*\(([\s\S]*)\)$/);
+  if (fnCallM) {
+    const fnName = fnCallM[1];
+    if (fnName === '$signed' || fnName === '$unsigned') {
+      const innerNet = buildExprGate(fnCallM[2], ctx, bitWidth, depth + 1);
+      if (fnName === '$signed') ctx.signedNets.add(innerNet);
+      return memo(innerNet);
+    }
+    warnOnce(
+      ctx,
+      `fn:${fnName}`,
+      `[${ctx.modName}] 関数呼び出し "${fnName}(...)" は論理合成未対応のため定数 X として扱いました。`,
+    );
+    return memo(getOrCreateConstNet(bitWidth, `0b${'x'.repeat(bitWidth)}`, `${fnName}()`, ctx));
+  }
+
   // 1a. Multi-input MUX detection (chained `(sel == k) ? ...` or synthesized `case`)
   const multiMuxNet = tryBuildMultiMux(expr, ctx, bitWidth);
   if (multiMuxNet) return memo(multiMuxNet);
@@ -2168,7 +2324,7 @@ function buildExprGate(exprRaw: string, ctx: SynthContext, bitWidth: number): st
     const falsePart = stripOuterParens(expr.slice(tern.cIdx + 1));
 
     if (truePart === falsePart) {
-      return memo(buildExprGate(truePart, ctx, bitWidth));
+      return memo(buildExprGate(truePart, ctx, bitWidth, depth + 1));
     }
 
     const isZLit = (s: string) => /^(?:\d+)?'s?bz+$|^'z$/i.test(stripOuterParens(s));
@@ -2188,29 +2344,29 @@ function buildExprGate(exprRaw: string, ctx: SynthContext, bitWidth: number): st
     // Simple 1-bit boolean simplifications (dramatically cuts redundant 1'b0/1'b1 MUX chains!)
     if (bitWidth === 1 && !isZLit(truePart) && !isZLit(falsePart)) {
       if (isBit1Lit(truePart) && isBit0Lit(falsePart)) {
-        return memo(buildExprGate(condPart, ctx, 1));
+        return memo(buildExprGate(condPart, ctx, 1, depth + 1));
       }
       if (isBit0Lit(truePart) && isBit1Lit(falsePart)) {
-        return memo(buildExprGate(`~(${condPart})`, ctx, 1));
+        return memo(buildExprGate(`~(${condPart})`, ctx, 1, depth + 1));
       }
       if (isBit0Lit(falsePart)) {
-        return memo(buildExprGate(`(${condPart}) & (${truePart})`, ctx, 1));
+        return memo(buildExprGate(`(${condPart}) & (${truePart})`, ctx, 1, depth + 1));
       }
       if (isBit0Lit(truePart)) {
-        return memo(buildExprGate(`(~(${condPart})) & (${falsePart})`, ctx, 1));
+        return memo(buildExprGate(`(~(${condPart})) & (${falsePart})`, ctx, 1, depth + 1));
       }
       if (isBit1Lit(truePart)) {
-        return memo(buildExprGate(`(${condPart}) | (${falsePart})`, ctx, 1));
+        return memo(buildExprGate(`(${condPart}) | (${falsePart})`, ctx, 1, depth + 1));
       }
       if (isBit1Lit(falsePart)) {
-        return memo(buildExprGate(`(~(${condPart})) | (${truePart})`, ctx, 1));
+        return memo(buildExprGate(`(~(${condPart})) | (${truePart})`, ctx, 1, depth + 1));
       }
     }
 
     // Special case: tri-state buffer idiom `en ? data : 1'bz`
     if (isZLit(falsePart)) {
-      const selNet = buildExprGate(condPart, ctx, 1);
-      const dataNet = buildExprGate(truePart, ctx, bitWidth);
+      const selNet = buildExprGate(condPart, ctx, 1, depth + 1);
+      const dataNet = buildExprGate(truePart, ctx, bitWidth, depth + 1);
       const gid = uid('g');
       ctx.gates.push({
         id: gid,
@@ -2230,8 +2386,8 @@ function buildExprGate(exprRaw: string, ctx: SynthContext, bitWidth: number): st
     }
     // Active-low tri-state idiom `en_n ? 1'bz : data`
     if (isZLit(truePart)) {
-      const selNet = buildExprGate(`~(${condPart})`, ctx, 1);
-      const dataNet = buildExprGate(falsePart, ctx, bitWidth);
+      const selNet = buildExprGate(`~(${condPart})`, ctx, 1, depth + 1);
+      const dataNet = buildExprGate(falsePart, ctx, bitWidth, depth + 1);
       const gid = uid('g');
       ctx.gates.push({
         id: gid,
@@ -2250,9 +2406,9 @@ function buildExprGate(exprRaw: string, ctx: SynthContext, bitWidth: number): st
       return memo(outNet);
     }
 
-    const selNet = buildExprGate(condPart, ctx, 1);
-    const trueRaw = buildExprGate(truePart, ctx, bitWidth);
-    const falseRaw = buildExprGate(falsePart, ctx, bitWidth);
+    const selNet = buildExprGate(condPart, ctx, 1, depth + 1);
+    const trueRaw = buildExprGate(truePart, ctx, bitWidth, depth + 1);
+    const falseRaw = buildExprGate(falsePart, ctx, bitWidth, depth + 1);
     const trueNet = extendNet(trueRaw, ctx.netWidths.get(trueRaw) ?? bitWidth, bitWidth, ctx);
     const falseNet = extendNet(falseRaw, ctx.netWidths.get(falseRaw) ?? bitWidth, bitWidth, ctx);
     const gid = uid('g');
@@ -2277,7 +2433,19 @@ function buildExprGate(exprRaw: string, ctx: SynthContext, bitWidth: number): st
   // 2. Binary operators ordered from lowest to highest Verilog precedence
   const levels: {
     ops: string[];
-    kind: GateType | 'EQ' | 'NEQ' | 'LT' | 'GT' | 'LE' | 'GE' | 'SUB';
+    kind:
+      | GateType
+      | 'EQ'
+      | 'NEQ'
+      | 'LT'
+      | 'GT'
+      | 'LE'
+      | 'GE'
+      | 'SUB'
+      | 'SHL'
+      | 'SHR'
+      | 'ASHR'
+      | 'UNSUP_ARITH';
   }[] = [
     { ops: ['||'], kind: 'OR' },
     { ops: ['&&'], kind: 'AND' },
@@ -2293,8 +2461,12 @@ function buildExprGate(exprRaw: string, ctx: SynthContext, bitWidth: number): st
     { ops: ['>='], kind: 'GE' },
     { ops: ['<'], kind: 'LT' },
     { ops: ['>'], kind: 'GT' },
+    { ops: ['<<<', '<<'], kind: 'SHL' },
+    { ops: ['>>>'], kind: 'ASHR' },
+    { ops: ['>>'], kind: 'SHR' },
     { ops: ['+'], kind: 'ADDER' },
     { ops: ['-'], kind: 'SUB' },
+    { ops: ['*', '/', '%'], kind: 'UNSUP_ARITH' },
   ];
 
   for (const lvl of levels) {
@@ -2302,6 +2474,91 @@ function buildExprGate(exprRaw: string, ctx: SynthContext, bitWidth: number): st
     if (found && found.idx > 0) {
       const lhsStr = expr.slice(0, found.idx).trim();
       const rhsStr = expr.slice(found.idx + found.op.length).trim();
+
+      if (lvl.kind === 'UNSUP_ARITH') {
+        warnOnce(
+          ctx,
+          `op:${found.op}`,
+          `[${ctx.modName}] 演算子 "${found.op}" は論理合成未対応のため、該当出力を定数 X として扱いました。`,
+        );
+        return memo(
+          getOrCreateConstNet(bitWidth, `0b${'x'.repeat(bitWidth)}`, `${bitWidth}'bx`, ctx),
+        );
+      }
+
+      if (lvl.kind === 'SHL' || lvl.kind === 'SHR' || lvl.kind === 'ASHR') {
+        const shiftAmt = parseConstInt(rhsStr, ctx.params);
+        if (shiftAmt === null) {
+          warnOnce(
+            ctx,
+            `varshift:${found.op}`,
+            `[${ctx.modName}] 可変シフト演算 "${found.op}" は未対応のため定数 X として扱いました。`,
+          );
+          return memo(
+            getOrCreateConstNet(bitWidth, `0b${'x'.repeat(bitWidth)}`, `${bitWidth}'bx`, ctx),
+          );
+        }
+        const lhsW = inferExprWidth(lhsStr, ctx.netWidths, bitWidth, ctx.params);
+        const lhsNet = buildExprGate(lhsStr, ctx, lhsW, depth + 1);
+        const curW = ctx.netWidths.get(lhsNet) ?? lhsW;
+        if (shiftAmt === 0) {
+          return memo(curW < bitWidth ? extendNet(lhsNet, curW, bitWidth, ctx) : lhsNet);
+        }
+        if (lvl.kind === 'SHL') {
+          if (shiftAmt >= bitWidth) {
+            return memo(getOrCreateConstNet(bitWidth, '0', `${bitWidth}'b0`, ctx));
+          }
+          const keepW = Math.min(curW, bitWidth - shiftAmt);
+          const lowPart = keepW === curW ? lhsNet : synthesizeSlice(lhsNet, keepW - 1, 0, ctx);
+          const zeroPad = getOrCreateConstNet(shiftAmt, '0', `${shiftAmt}'b0`, ctx);
+          const widths = [shiftAmt, keepW];
+          const srcs = [zeroPad, lowPart];
+          const remW = bitWidth - shiftAmt - keepW;
+          if (remW > 0) {
+            widths.push(remW);
+            srcs.push(getOrCreateConstNet(remW, '0', `${remW}'b0`, ctx));
+          }
+          const splId = uid('shl');
+          ctx.gates.push({
+            id: splId,
+            type: 'SPLITTER',
+            x: 0,
+            y: 0,
+            rotation: 0,
+            label: `<<${shiftAmt}`,
+            props: { splitMode: 'merge', splitWidths: widths, bitWidth },
+          });
+          srcs.forEach((s, idx) =>
+            addNetSink(ctx.netPinMap, s, { gateId: splId, pinId: `b${idx}` }),
+          );
+          const outNet = `__shl_${splId}`;
+          addNetDriver(ctx.netPinMap, outNet, { gateId: splId, pinId: 'bus' });
+          ctx.netWidths.set(outNet, bitWidth);
+          return memo(outNet);
+        }
+        // SHR / ASHR
+        const isArith = lvl.kind === 'ASHR' && ctx.signedNets.has(lhsNet);
+        if (shiftAmt >= curW) {
+          if (isArith) {
+            const signBit = synthesizeSlice(lhsNet, curW - 1, curW - 1, ctx);
+            ctx.signedNets.add(signBit);
+            return memo(extendNet(signBit, 1, bitWidth, ctx));
+          }
+          return memo(getOrCreateConstNet(bitWidth, '0', `${bitWidth}'b0`, ctx));
+        }
+        const shiftedSlice = synthesizeSlice(lhsNet, curW - 1, shiftAmt, ctx);
+        const sliceW = curW - shiftAmt;
+        if (isArith) ctx.signedNets.add(shiftedSlice);
+        const outNet =
+          sliceW < bitWidth
+            ? isArith
+              ? extendNet(shiftedSlice, sliceW, bitWidth, ctx)
+              : zeroExtendNet(shiftedSlice, sliceW, bitWidth, ctx)
+            : sliceW > bitWidth
+              ? synthesizeSlice(shiftedSlice, bitWidth - 1, 0, ctx)
+              : shiftedSlice;
+        return memo(outNet);
+      }
 
       if (
         lvl.kind === 'EQ' ||
@@ -2590,16 +2847,22 @@ function buildExprGate(exprRaw: string, ctx: SynthContext, bitWidth: number): st
     return memo(outNet);
   }
 
-  // 3b. Unary NOT (~ or !)
+  // 3b. Unary NOT (~ or !) or Unary minus (-expr)
+  if (expr.startsWith('-')) {
+    const innerStr = expr.slice(1).trim();
+    if (innerStr) {
+      return memo(buildExprGate(`0 - (${innerStr})`, ctx, bitWidth, depth + 1));
+    }
+  }
   if (expr.startsWith('~') || expr.startsWith('!')) {
     const innerStr = expr.slice(1).trim();
     const isLogicalNot = expr.startsWith('!');
     const innerW = isLogicalNot ? inferExprWidth(innerStr, ctx.netWidths, 1, ctx.params) : bitWidth;
     if (isLogicalNot && innerW > 1) {
       // Logical !bus is equivalent to reduction NOR `~|bus`
-      return memo(buildExprGate(`~|(${innerStr})`, ctx, 1));
+      return memo(buildExprGate(`~|(${innerStr})`, ctx, 1, depth + 1));
     }
-    const innerNet = buildExprGate(innerStr, ctx, bitWidth);
+    const innerNet = buildExprGate(innerStr, ctx, bitWidth, depth + 1);
     const gid = uid('g');
     ctx.gates.push({
       id: gid,
@@ -2919,7 +3182,9 @@ function autoLayoutGates(
   if (outLayer >= 3) {
     const outDirectCount = new Map<string, number>();
     const nonOutDirectCount = new Map<string, number>();
-    for (const [, entry] of netPinMap.entries()) {
+    for (const [netName, entry] of netPinMap.entries()) {
+      // Exclude global clock/reset nets so high-fanout clocks don't distort output-proximity scoring
+      if (isGlobalDistributionNet(netName, entry, gateById)) continue;
       let outSinks = 0;
       let otherSinks = 0;
       for (const s of entry.sinks) {
@@ -2972,7 +3237,14 @@ function autoLayoutGates(
     for (let pass = 0; pass < 3; pass++) {
       let shifted = false;
       for (const g of gates) {
-        if (g.type === 'MODULE_IN' || g.type === 'CONST' || g.type === 'MODULE_OUT') continue;
+        if (
+          g.type === 'MODULE_IN' ||
+          g.type === 'CONST' ||
+          g.type === 'MODULE_OUT' ||
+          globalSourceGateIds.has(g.id)
+        ) {
+          continue;
+        }
         const succs = dataSuccs.get(g.id);
         if (!succs || succs.size === 0) continue;
         let minSuccLayer = Infinity;
@@ -3185,10 +3457,36 @@ const STRONG_IN_NAMES = new Set([
 
 function classifyStubPortByName(pname: string): 'in' | 'out' | 'unknown' {
   const lower = pname.toLowerCase();
+
+  // AXI-Stream standard conventions: m_axis_* produces data/valid, receives tready; s_axis_* receives data/valid, produces tready
+  if (lower.startsWith('m_axis_')) {
+    if (/(?:^|_)tready$/.test(lower)) return 'in';
+    if (/(?:^|_)(?:tdata|tvalid|tlast|tuser|tkeep|tstrb)$/.test(lower)) return 'out';
+  }
+  if (lower.startsWith('s_axis_')) {
+    if (/(?:^|_)tready$/.test(lower)) return 'out';
+    if (/(?:^|_)(?:tdata|tvalid|tlast|tuser|tkeep|tstrb)$/.test(lower)) return 'in';
+  }
+
+  // Clock outputs (e.g. clk_wiz `clk_out1`, `clk_o`) vs clock/reset inputs (`aclk`, `SysClk100`, `ADC_SamplingClk`, `aRst_n`)
+  if (/(?:^|_)clk_?out\d*$|^(?:clk_o|clock_o)$/.test(lower)) {
+    return 'out';
+  }
+  if (
+    /^(?:a|s|m|sys|adc|dac|ref|core|bus|p|h)?clk\d*$/.test(lower) ||
+    /(?:^|_)(?:aclk|sclk|pclk|hclk|clk_?in\d*|samplingclk|inclk|inio_clk|dcoclk|clk)$/.test(
+      lower,
+    ) ||
+    /^(?:a?rst|reset|clr|clear)(?:_?\w*)?$/.test(lower)
+  ) {
+    return 'in';
+  }
+
   if (
     lower.startsWith('out') ||
     lower.endsWith('_o') ||
-    lower.endsWith('_out') ||
+    /_out\d*$/.test(lower) ||
+    /_dout\d*$/.test(lower) ||
     STRONG_OUT_NAMES.has(lower)
   ) {
     return 'out';
@@ -3196,7 +3494,8 @@ function classifyStubPortByName(pname: string): 'in' | 'out' | 'unknown' {
   if (
     lower.startsWith('in') ||
     lower.endsWith('_i') ||
-    lower.endsWith('_in') ||
+    /_in\d*$/.test(lower) ||
+    /_din\d*$/.test(lower) ||
     STRONG_IN_NAMES.has(lower)
   ) {
     return 'in';
@@ -3224,9 +3523,30 @@ export function importVerilogFilesToCircuits(
   options?: ImportOptions,
 ): ImportResult {
   const warnings: string[] = [];
-  const validFiles = files.filter((f) => f.content.trim().length > 0);
-  if (validFiles.length === 0) {
+  const nonEmptyFiles = files.filter((f) => f.content.trim().length > 0);
+  if (nonEmptyFiles.length === 0) {
     throw new Error('Verilog/SystemVerilog のソースが空です。');
+  }
+
+  // Validate each file up-front so XML / Vivado .xci / binary / non-HDL files are rejected safely
+  const validFiles: HdlSourceFile[] = [];
+  const rejectedReasons: string[] = [];
+  for (const f of nonEmptyFiles) {
+    const check = inspectHdlSourceFile(f);
+    if (check.valid) {
+      validFiles.push(f);
+    } else {
+      const fname = f.name.trim() || '無名ファイル';
+      const msg = `ファイル "${fname}" をスキップしました（${check.reason ?? '未対応形式'}）。`;
+      warnings.push(msg);
+      rejectedReasons.push(`${fname}: ${check.reason ?? '未対応形式'}`);
+    }
+  }
+  if (validFiles.length === 0) {
+    const detail = rejectedReasons.slice(0, 3).join(' / ');
+    throw new Error(
+      `有効な Verilog/SystemVerilog ファイルが見つかりませんでした。${detail ? `（${detail}）` : ''}`,
+    );
   }
 
   interface ParsedWithMeta extends ParsedModule {
@@ -3381,9 +3701,26 @@ export function importVerilogFilesToCircuits(
     parentNetEvidence.set(pm.name, { drivenNets, sinkNets, outPorts });
   }
 
+  // Count how many stub connections touch each net per parent module so a shared multi-stub net
+  // (e.g. clk_wiz `clk_out1` fanning out to 10 stubs + parent always blocks) does NOT falsely mark
+  // every stub consumer as `provenOut`!
+  const parentStubNetCounts = new Map<string, Map<string, number>>();
+  for (const pm of parsed) {
+    const counts = new Map<string, number>();
+    for (const inst of pm.instances) {
+      if (nameToId.has(inst.moduleName)) continue;
+      for (const c of inst.conns) {
+        const baseSig = extractSimpleNetName(c.signal);
+        if (baseSig) counts.set(baseSig, (counts.get(baseSig) ?? 0) + 1);
+      }
+    }
+    parentStubNetCounts.set(pm.name, counts);
+  }
+
   // Collect all stub ports and apply name + parent dataflow evidence
   for (const pm of parsed) {
     const ev = parentNetEvidence.get(pm.name)!;
+    const netCounts = parentStubNetCounts.get(pm.name)!;
     for (const inst of pm.instances) {
       if (nameToId.has(inst.moduleName)) continue;
       let pMap = stubAccum.get(inst.moduleName);
@@ -3414,7 +3751,12 @@ export function importVerilogFilesToCircuits(
           acc.bitWidth = inferredW;
         }
         if (baseSig) {
-          if (ev.sinkNets.has(baseSig) && !ev.drivenNets.has(baseSig)) {
+          const stubTouches = netCounts.get(baseSig) ?? 1;
+          if (ev.outPorts.has(baseSig) && !ev.drivenNets.has(baseSig) && stubTouches === 1) {
+            // Directly drives a parent MODULE_OUT port with no other driver -> definitely OUT
+            acc.provenOut = true;
+          } else if (ev.sinkNets.has(baseSig) && !ev.drivenNets.has(baseSig) && stubTouches === 1) {
+            // Sole stub connected to an undriven internal wire consumed by parent logic -> OUT
             acc.provenOut = true;
           } else if (ev.drivenNets.has(baseSig) && !ev.outPorts.has(baseSig)) {
             acc.provenIn = true;
@@ -3433,8 +3775,8 @@ export function importVerilogFilesToCircuits(
     }
   }
 
-  // Stub-to-stub net pass: for any internal wire used ONLY between external stubs that still has
-  // no `'out'` port driving it, promote the earliest non-input-proven stub port on that wire to `'out'`!
+  // Stub-to-stub net pass: for any internal wire shared by multiple external stubs (e.g. clk_out1
+  // or stub-to-stub AXI bus) that still has no `'out'` port driving it, elect ONE best driver!
   for (const pm of parsed) {
     const ev = parentNetEvidence.get(pm.name)!;
     const stubNetRefs = new Map<
@@ -3459,8 +3801,9 @@ export function importVerilogFilesToCircuits(
     for (const refs of stubNetRefs.values()) {
       if (refs.length < 2) continue;
       if (refs.some((r) => r.acc.dir === 'out')) continue;
-      // Pick best driver candidate: prefer unknown-name & not provenIn, else first non-provenIn, else first
+      // Pick best driver candidate: prefer nameHint='out', else unknown-name & not provenIn, else first non-provenIn
       const candidate =
+        refs.find((r) => r.acc.nameHint === 'out') ??
         refs.find((r) => !r.acc.provenIn && r.acc.nameHint !== 'in') ??
         refs.find((r) => !r.acc.provenIn) ??
         refs[0];
@@ -3576,6 +3919,7 @@ export function importVerilogFilesToCircuits(
     for (const [wn, ww] of pm.wires.entries()) netWidths.set(wn, ww);
 
     const ctx: SynthContext = {
+      modName: pm.name,
       gates,
       netPinMap,
       netWidths,
@@ -3585,6 +3929,8 @@ export function importVerilogFilesToCircuits(
       rangeSplitCache: new Map(),
       constCache: new Map(),
       exprCache: new Map(),
+      warnings,
+      warnedIssues: new Set(),
     };
 
     for (const g of gates) {
@@ -3929,7 +4275,17 @@ export function importVerilogFilesToCircuits(
       const yMin = Math.min(fromPos.y, toPos.y);
       const yMax = Math.max(fromPos.y, toPos.y);
       const pad = 6;
-      const others = gateBoxes.filter((b) => b.id !== fromGateId && b.id !== toGateId);
+      // Pre-filter to only boxes whose bounding box overlaps the wire's XY corridor!
+      const others = gateBoxes.filter(
+        (b) =>
+          b.id !== fromGateId &&
+          b.id !== toGateId &&
+          b.x + b.width + pad > xStart &&
+          b.x - pad < xEnd &&
+          b.y + b.height + pad > yMin &&
+          b.y - pad < yMax,
+      );
+      if (others.length === 0) return false;
 
       const horizBlocked = (x1: number, x2: number, y: number): boolean => {
         const lo = Math.min(x1, x2);
@@ -3976,6 +4332,13 @@ export function importVerilogFilesToCircuits(
     };
 
     const tempDoc: CircuitDocument = { ...doc, wires };
+    const batchRouter = createBatchWireRouter(tempDoc, tempProject, GRID_SIZE);
+    let estimatedWireCount = 0;
+    for (const entry of netPinMap.values()) {
+      estimatedWireCount += Math.max(entry.sinks.length, entry.drivers.length);
+    }
+    const useFastRouting = estimatedWireCount > 240;
+
     for (const [netName, entry] of netPinMap.entries()) {
       const visibleLabel = netName.startsWith('__') ? undefined : netName;
       const isGlobalNet = isGlobalDistributionNet(netName, entry, gateMap);
@@ -4041,14 +4404,13 @@ export function importVerilogFilesToCircuits(
           allowSharedDetourY = false;
         }
 
-        const pts = routeWire(fromInfo.pos, toInfo.pos, {
+        const pts = batchRouter.route(fromInfo.pos, toInfo.pos, {
           startSide: fromInfo.side,
           endSide: toInfo.side,
-          circuit: tempDoc,
-          project: tempProject,
           routeMode: 'grid',
           preferredDetourY,
           allowSharedDetourY,
+          fastMode: useFastRouting,
         });
         wires.push({
           id: uid('w'),

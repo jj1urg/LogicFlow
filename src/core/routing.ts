@@ -23,6 +23,521 @@ function sideDir(side?: PinSide): Point {
   }
 }
 
+const COORD_BIAS = 1_000_000;
+const COORD_STRIDE = 2_000_000;
+
+function packCell(gx: number, gy: number): number {
+  return (gx + COORD_BIAS) * COORD_STRIDE + (gy + COORD_BIAS);
+}
+
+export interface BatchWireRouter {
+  route(
+    start: Point,
+    end: Point,
+    options: {
+      startSide?: PinSide;
+      endSide?: PinSide;
+      routeMode: RouteMode;
+      preferredDetourY?: number;
+      allowSharedDetourY?: boolean;
+      fastMode?: boolean;
+    },
+  ): Point[];
+}
+
+/**
+ * Incremental obstacle-aware wire router for batch routing (e.g. HDL auto-import).
+ * Pre-indexes all gate obstacles ONCE and incrementally marks each newly routed wire,
+ * reducing multi-hundred-wire batch routing from O(W^3) to ~O(W).
+ */
+export function createBatchWireRouter(
+  circuit: CircuitDocument,
+  project?: ProjectDocument,
+  gridSize = GRID_SIZE,
+): BatchWireRouter {
+  const g = gridSize;
+  const blockedCells = new Set<number>();
+  const usedHoriz = new Set<number>();
+  const usedVert = new Set<number>();
+  const usedNodes = new Set<number>();
+
+  interface GridGateBox {
+    x0: number;
+    x1: number;
+    y0: number;
+    y1: number;
+    bx0: number;
+    bx1: number;
+  }
+  const gateGridBoxes: GridGateBox[] = [];
+
+  for (const gate of circuit.gates) {
+    const b = getGateBounds(gate, project);
+    const x0 = Math.floor((b.x - 2) / g);
+    const x1 = Math.ceil((b.x + b.width + 2) / g);
+    const y0 = Math.floor((b.y - 2) / g);
+    const y1 = Math.ceil((b.y + b.height + 2) / g);
+    gateGridBoxes.push({ x0, x1, y0, y1, bx0: b.x, bx1: b.x + b.width });
+    for (let x = x0; x <= x1; x++) {
+      for (let y = y0; y <= y1; y++) {
+        blockedCells.add(packCell(x, y));
+      }
+    }
+  }
+
+  const recordWirePoints = (pts: Point[]) => {
+    for (let i = 0; i < pts.length - 1; i++) {
+      const a = pts[i];
+      const b = pts[i + 1];
+      const ax = Math.round(a.x / g);
+      const ay = Math.round(a.y / g);
+      const bx = Math.round(b.x / g);
+      const by = Math.round(b.y / g);
+      if (ax === bx) {
+        const yMin = Math.min(ay, by);
+        const yMax = Math.max(ay, by);
+        for (let y = yMin; y < yMax; y++) {
+          const k = packCell(ax, y);
+          usedVert.add(k);
+          usedNodes.add(k);
+        }
+      } else if (ay === by) {
+        const xMin = Math.min(ax, bx);
+        const xMax = Math.max(ax, bx);
+        for (let x = xMin; x < xMax; x++) {
+          const k = packCell(x, ay);
+          usedHoriz.add(k);
+          usedNodes.add(k);
+        }
+      }
+    }
+  };
+
+  for (const wire of circuit.wires) {
+    recordWirePoints(wire.points);
+  }
+
+  const findFreeChannelX = (
+    baseGx: number,
+    yA: number,
+    yB: number,
+    preferDir: -1 | 0 | 1 = 0,
+    restrictDir: -1 | 0 | 1 = 0,
+    horizY?: number,
+    skipStartCell?: number,
+    skipEndCell?: number,
+  ): number => {
+    const yMin = Math.min(yA, yB);
+    const yMax = Math.max(yA, yB);
+    const span = yMax - yMin;
+    // Sample stride keeps scoring O(1)-bounded even on 5000px-tall layouts
+    const yStep = span > 160 ? Math.ceil(span / 160) : 1;
+    const scoreX = (cx: number) => {
+      let cost = 0;
+      for (let y = yMin; y <= yMax; y += yStep) {
+        const k = packCell(cx, y);
+        if (y < yMax && usedVert.has(k)) cost += 100;
+        if (k !== skipStartCell && k !== skipEndCell && blockedCells.has(k)) cost += 250;
+      }
+      if (horizY !== undefined && cx !== baseGx) {
+        const hxMin = Math.min(baseGx, cx);
+        const hxMax = Math.max(baseGx, cx);
+        for (let x = hxMin; x <= hxMax; x++) {
+          if (x !== baseGx) {
+            const hk = packCell(x, horizY);
+            if (hk !== skipStartCell && hk !== skipEndCell && blockedCells.has(hk)) cost += 500;
+          }
+        }
+      }
+      return cost;
+    };
+    let bestGx = baseGx;
+    let bestCost = scoreX(baseGx);
+    if (bestCost === 0) return bestGx * g;
+    for (let offset = 1; offset <= 16; offset++) {
+      const cands =
+        restrictDir > 0
+          ? [baseGx + offset]
+          : restrictDir < 0
+            ? [baseGx - offset]
+            : preferDir > 0
+              ? [baseGx + offset, baseGx - offset]
+              : [baseGx - offset, baseGx + offset];
+      for (const cand of cands) {
+        const c = scoreX(cand);
+        if (c < bestCost) {
+          bestCost = c;
+          bestGx = cand;
+          if (c === 0) return bestGx * g;
+        }
+      }
+    }
+    return bestGx * g;
+  };
+
+  const findFreeTrackY = (
+    baseGy: number,
+    xA: number,
+    xB: number,
+    stepDir: -1 | 1,
+    ignoreWireOverlap = false,
+    skipStartCell?: number,
+    skipEndCell?: number,
+  ): number => {
+    const xMin = Math.min(xA, xB);
+    const xMax = Math.max(xA, xB);
+    const span = xMax - xMin;
+    const xStep = span > 160 ? Math.ceil(span / 160) : 1;
+    const scoreY = (cy: number) => {
+      let cost = 0;
+      for (let x = xMin; x <= xMax; x += xStep) {
+        const k = packCell(x, cy);
+        if (!ignoreWireOverlap && x < xMax && usedHoriz.has(k)) cost += 100;
+        if (k !== skipStartCell && k !== skipEndCell && blockedCells.has(k)) cost += 250;
+      }
+      return cost;
+    };
+    let bestGy = baseGy;
+    let bestCost = scoreY(baseGy);
+    if (bestCost === 0) return bestGy * g;
+    for (let offset = 1; offset <= 18; offset++) {
+      const cand = baseGy + stepDir * offset;
+      const c = scoreY(cand);
+      if (c < bestCost) {
+        bestCost = c;
+        bestGy = cand;
+        if (c === 0) return bestGy * g;
+      }
+    }
+    return bestGy * g;
+  };
+
+  return {
+    route(start, end, options) {
+      const { startSide, endSide, routeMode, preferredDetourY, allowSharedDetourY, fastMode } =
+        options;
+      if (routeMode === 'free') {
+        const pts = simplifyPolyline([start, end]);
+        recordWirePoints(pts);
+        return pts;
+      }
+
+      const sd = sideDir(startSide);
+      const ed = sideDir(endSide);
+      const sStub: Point = {
+        x: snapToGrid(start.x + sd.x * g, g),
+        y: snapToGrid(start.y + sd.y * g, g),
+      };
+      const eStub: Point = {
+        x: snapToGrid(end.x + ed.x * g, g),
+        y: snapToGrid(end.y + ed.y * g, g),
+      };
+
+      const gx0 = Math.round(sStub.x / g);
+      const gy0 = Math.round(sStub.y / g);
+      const gx1 = Math.round(eStub.x / g);
+      const gy1 = Math.round(eStub.y / g);
+      const startKey = packCell(gx0, gy0);
+      const endKey = packCell(gx1, gy1);
+
+      const buildDetourRoute = (
+        detourGy: number,
+        stepDir: -1 | 1,
+        allowSharedY = false,
+      ): Point[] => {
+        const exitPref: -1 | 0 | 1 = sd.x > 0 ? 1 : sd.x < 0 ? -1 : 0;
+        const entryPref: -1 | 0 | 1 = ed.x > 0 ? 1 : ed.x < 0 ? -1 : 0;
+        const exitX = findFreeChannelX(
+          gx0,
+          gy0,
+          detourGy,
+          exitPref,
+          exitPref,
+          gy0,
+          startKey,
+          endKey,
+        );
+        const entryX = findFreeChannelX(
+          gx1,
+          detourGy,
+          gy1,
+          entryPref,
+          entryPref,
+          gy1,
+          startKey,
+          endKey,
+        );
+        const trackY = findFreeTrackY(
+          detourGy,
+          Math.round(exitX / g),
+          Math.round(entryX / g),
+          stepDir,
+          allowSharedY,
+          startKey,
+          endKey,
+        );
+        return simplifyPolyline([
+          start,
+          sStub,
+          { x: exitX, y: sStub.y },
+          { x: exitX, y: trackY },
+          { x: entryX, y: trackY },
+          { x: entryX, y: eStub.y },
+          eStub,
+          end,
+        ]);
+      };
+
+      if (preferredDetourY !== undefined) {
+        const detourGy = Math.round(preferredDetourY / g);
+        const stepDir: -1 | 1 = detourGy <= Math.min(gy0, gy1) ? -1 : 1;
+        const pts = buildDetourRoute(detourGy, stepDir, Boolean(allowSharedDetourY));
+        recordWirePoints(pts);
+        return pts;
+      }
+
+      const spanMinX = Math.min(start.x, end.x) - g * 2;
+      const spanMaxX = Math.max(start.x, end.x) + g * 2;
+      let obsMinGy = Math.min(gy0, gy1);
+      let obsMaxGy = Math.max(gy0, gy1);
+      for (const gb of gateGridBoxes) {
+        if (gb.bx1 >= spanMinX && gb.bx0 <= spanMaxX) {
+          if (gb.y0 < obsMinGy) obsMinGy = gb.y0;
+          if (gb.y1 > obsMaxGy) obsMaxGy = gb.y1;
+        }
+      }
+
+      const buildFallbackRoute = (): Point[] => {
+        const midX = findFreeChannelX(
+          Math.round((gx0 + gx1) / 2),
+          gy0,
+          gy1,
+          0,
+          0,
+          undefined,
+          startKey,
+          endKey,
+        );
+        const midGx = Math.round(midX / g);
+        let hitsObstacle = gx1 < gx0;
+        if (!hitsObstacle) {
+          const checkH = (xA: number, xB: number, y: number) => {
+            for (let x = Math.min(xA, xB); x <= Math.max(xA, xB); x++) {
+              const k = packCell(x, y);
+              if (k !== startKey && k !== endKey && blockedCells.has(k)) return true;
+            }
+            return false;
+          };
+          const checkV = (x: number, yA: number, yB: number) => {
+            for (let y = Math.min(yA, yB); y <= Math.max(yA, yB); y++) {
+              const k = packCell(x, y);
+              if (k !== startKey && k !== endKey && blockedCells.has(k)) return true;
+            }
+            return false;
+          };
+          hitsObstacle =
+            checkH(gx0, midGx, gy0) || checkV(midGx, gy0, gy1) || checkH(midGx, gx1, gy1);
+        }
+
+        if (!hitsObstacle) {
+          return simplifyPolyline([
+            start,
+            sStub,
+            { x: midX, y: sStub.y },
+            { x: midX, y: eStub.y },
+            eStub,
+            end,
+          ]);
+        }
+
+        const topGy = obsMinGy - 2;
+        const botGy = obsMaxGy + 2;
+        const distTop = Math.abs(gy0 - topGy) + Math.abs(gy1 - topGy);
+        const distBot = Math.abs(gy0 - botGy) + Math.abs(gy1 - botGy);
+        return distTop <= distBot ? buildDetourRoute(topGy, -1) : buildDetourRoute(botGy, 1);
+      };
+
+      const margin = 8;
+      const minGx =
+        startSide === 'right' && gx1 >= gx0
+          ? gx0
+          : endSide === 'right' && gx1 <= gx0
+            ? gx1
+            : Math.min(gx0, gx1) - margin;
+      const maxGx =
+        endSide === 'left' && gx1 >= gx0
+          ? gx1
+          : startSide === 'left' && gx1 <= gx0
+            ? gx0
+            : Math.max(gx0, gx1) + margin;
+      const minGy = Math.min(Math.min(gy0, gy1) - margin, obsMinGy - 3);
+      const maxGy = Math.max(Math.max(gy0, gy1) + margin, obsMaxGy + 3);
+
+      const gridW = maxGx - minGx + 1;
+      const gridH = maxGy - minGy + 1;
+      const astarLimit = fastMode ? 2400 : 9000;
+      if (
+        gridW * gridH > astarLimit ||
+        (fastMode && Math.abs(gx1 - gx0) + Math.abs(gy1 - gy0) > 45)
+      ) {
+        const pts = buildFallbackRoute();
+        recordWirePoints(pts);
+        return pts;
+      }
+
+      const cellCount = gridW * gridH;
+      const totalStates = cellCount * 5;
+      const bestCost = new Float64Array(totalStates);
+      bestCost.fill(Infinity);
+      const parentState = new Int32Array(totalStates);
+      parentState.fill(-1);
+
+      const heapState: number[] = [];
+      const heapF: number[] = [];
+      const heapG: number[] = [];
+
+      const heapPush = (st: number, gCost: number, fCost: number) => {
+        let i = heapState.length;
+        heapState.push(st);
+        heapG.push(gCost);
+        heapF.push(fCost);
+        while (i > 0) {
+          const p = (i - 1) >> 1;
+          if (heapF[p] <= fCost) break;
+          heapState[i] = heapState[p];
+          heapG[i] = heapG[p];
+          heapF[i] = heapF[p];
+          i = p;
+        }
+        heapState[i] = st;
+        heapG[i] = gCost;
+        heapF[i] = fCost;
+      };
+
+      const heapPop = (): { st: number; gCost: number } => {
+        const topSt = heapState[0];
+        const topG = heapG[0];
+        const lastIdx = heapState.length - 1;
+        const lastSt = heapState.pop()!;
+        const lastG = heapG.pop()!;
+        const lastF = heapF.pop()!;
+        if (lastIdx > 0) {
+          let i = 0;
+          const len = heapState.length;
+          while (true) {
+            const l = (i << 1) + 1;
+            const r = l + 1;
+            let smallest = i;
+            if (l < len && heapF[l] < (smallest === i ? lastF : heapF[smallest])) smallest = l;
+            if (r < len && heapF[r] < (smallest === i ? lastF : heapF[smallest])) smallest = r;
+            if (smallest === i) break;
+            heapState[i] = heapState[smallest];
+            heapG[i] = heapG[smallest];
+            heapF[i] = heapF[smallest];
+            i = smallest;
+          }
+          heapState[i] = lastSt;
+          heapG[i] = lastG;
+          heapF[i] = lastF;
+        }
+        return { st: topSt, gCost: topG };
+      };
+
+      const dxArr = [1, -1, 0, 0];
+      const dyArr = [0, 0, 1, -1];
+      const startCell = (gy0 - minGy) * gridW + (gx0 - minGx);
+      const goalCell = (gy1 - minGy) * gridW + (gx1 - minGx);
+      const startState = startCell * 5 + 4;
+      bestCost[startState] = 0;
+      heapPush(startState, 0, Math.abs(gx1 - gx0) + Math.abs(gy1 - gy0));
+
+      let foundState = -1;
+      let expanded = 0;
+      const MAX_EXPAND = fastMode ? 1200 : 6500;
+      const midGx = (gx0 + gx1) / 2;
+      const halfSpanX = Math.max(1, Math.abs(gx1 - gx0) / 2);
+      const hasChannelRoom = Math.abs(gx1 - gx0) >= 3 && gy0 !== gy1;
+
+      while (heapState.length > 0 && expanded < MAX_EXPAND) {
+        const { st, gCost } = heapPop();
+        if (gCost > bestCost[st]) continue;
+        expanded++;
+
+        const cell = Math.trunc(st / 5);
+        if (cell === goalCell) {
+          foundState = st;
+          break;
+        }
+        const curDir = st - cell * 5;
+        const ly = Math.trunc(cell / gridW);
+        const lx = cell - ly * gridW;
+        const curGx = lx + minGx;
+        const curGy = ly + minGy;
+        const curKey = packCell(curGx, curGy);
+
+        for (let d = 0; d < 4; d++) {
+          const nlx = lx + dxArr[d];
+          const nly = ly + dyArr[d];
+          if (nlx < 0 || nlx >= gridW || nly < 0 || nly >= gridH) continue;
+
+          const nCell = nly * gridW + nlx;
+          const nx = nlx + minGx;
+          const ny = nly + minGy;
+          const nKey = packCell(nx, ny);
+
+          let stepCost = 1;
+          if (curDir !== 4 && curDir !== d) stepCost += 0.65;
+          if (nKey !== startKey && nKey !== endKey && blockedCells.has(nKey)) stepCost += 240;
+
+          const segUsed =
+            d === 0
+              ? usedHoriz.has(curKey)
+              : d === 1
+                ? usedHoriz.has(nKey)
+                : d === 2
+                  ? usedVert.has(curKey)
+                  : usedVert.has(nKey);
+          if (segUsed) stepCost += 85;
+          else if (usedNodes.has(nKey)) stepCost += 2.2;
+
+          if (hasChannelRoom && (d === 2 || d === 3)) {
+            const distRatio = Math.min(1.5, Math.abs(nx - midGx) / halfSpanX);
+            stepCost += distRatio * 0.45;
+            if (nx === gx0 || nx === gx1) stepCost += 0.9;
+          }
+
+          const ng = gCost + stepCost;
+          const nState = nCell * 5 + d;
+          if (bestCost[nState] <= ng) continue;
+          bestCost[nState] = ng;
+          parentState[nState] = st;
+          const h = Math.abs(gx1 - nx) + Math.abs(gy1 - ny);
+          heapPush(nState, ng, ng + h);
+        }
+      }
+
+      let pts: Point[];
+      if (foundState !== -1) {
+        const gridPts: Point[] = [];
+        let curSt = foundState;
+        while (curSt !== -1) {
+          const cell = Math.trunc(curSt / 5);
+          const ly = Math.trunc(cell / gridW);
+          const lx = cell - ly * gridW;
+          gridPts.push({ x: (lx + minGx) * g, y: (ly + minGy) * g });
+          curSt = parentState[curSt];
+        }
+        gridPts.reverse();
+        pts = simplifyPolyline([start, ...gridPts, end]);
+      } else {
+        pts = buildFallbackRoute();
+      }
+      recordWirePoints(pts);
+      return pts;
+    },
+  };
+}
+
 function segKey(ax: number, ay: number, bx: number, by: number): string {
   if (ax < bx || (ax === bx && ay < by)) return `${ax},${ay}-${bx},${by}`;
   return `${bx},${by}-${ax},${ay}`;
@@ -617,6 +1132,40 @@ export interface WireCrossing {
  * so the renderer never backtracks a straight line through an already-drawn bridge arc!
  */
 export function findOrthogonalCrossings(wires: Wire[]): WireCrossing[] {
+  interface VSeg {
+    wireIdx: number;
+    x: number;
+    yMin: number;
+    yMax: number;
+  }
+  const vSegs: VSeg[] = [];
+  for (let j = 0; j < wires.length; j++) {
+    const wb = wires[j];
+    for (let sj = 0; sj < wb.points.length - 1; sj++) {
+      const b1 = wb.points[sj];
+      const b2 = wb.points[sj + 1];
+      if (Math.abs(b1.x - b2.x) > 0.5) continue;
+      const vyMin = Math.min(b1.y, b2.y);
+      const vyMax = Math.max(b1.y, b2.y);
+      if (vyMax - vyMin < 14) continue;
+      vSegs.push({ wireIdx: j, x: b1.x, yMin: vyMin, yMax: vyMax });
+    }
+  }
+  if (vSegs.length === 0) return [];
+  vSegs.sort((a, b) => a.x - b.x);
+
+  // Binary search lower bound for vSegs[idx].x > targetX
+  const lowerBound = (targetX: number): number => {
+    let lo = 0;
+    let hi = vSegs.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (vSegs[mid].x <= targetX) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  };
+
   const crossings: WireCrossing[] = [];
   for (let i = 0; i < wires.length; i++) {
     const wa = wires[i];
@@ -630,31 +1179,19 @@ export function findOrthogonalCrossings(wires: Wire[]): WireCrossing[] {
       const hxMax = Math.max(a1.x, a2.x);
       if (hxMax - hxMin < 14) continue;
 
-      const rawXs: number[] = [];
-      for (let j = 0; j < wires.length; j++) {
-        if (i === j) continue;
-        const wb = wires[j];
-        for (let sj = 0; sj < wb.points.length - 1; sj++) {
-          const b1 = wb.points[sj];
-          const b2 = wb.points[sj + 1];
-          if (Math.abs(b1.x - b2.x) > 0.5) continue;
-          const vx = b1.x;
-          const vyMin = Math.min(b1.y, b2.y);
-          const vyMax = Math.max(b1.y, b2.y);
-          if (vx > hxMin + 7 && vx < hxMax - 7 && hy > vyMin + 7 && hy < vyMax - 7) {
-            rawXs.push(vx);
-          }
-        }
-      }
-
-      if (rawXs.length === 0) continue;
-      rawXs.sort((u, v) => u - v);
-      // Deduplicate identical or overlapping crossing X coordinates (min spacing >= 12px for hopR=5.5)
+      const xLo = hxMin + 7;
+      const xHi = hxMax - 7;
       let lastX = -Infinity;
-      for (const vx of rawXs) {
-        if (vx - lastX >= 12) {
-          crossings.push({ wireId: wa.id, segIndex: si, x: vx, y: hy });
-          lastX = vx;
+      for (let idx = lowerBound(xLo); idx < vSegs.length; idx++) {
+        const vs = vSegs[idx];
+        if (vs.x >= xHi) break;
+        if (vs.wireIdx === i) continue;
+        if (hy > vs.yMin + 7 && hy < vs.yMax - 7) {
+          // vSegs is already sorted by x, so we can deduplicate on the fly!
+          if (vs.x - lastX >= 12) {
+            crossings.push({ wireId: wa.id, segIndex: si, x: vs.x, y: hy });
+            lastX = vs.x;
+          }
         }
       }
     }
@@ -673,6 +1210,70 @@ export function findWireJunctions(wires: Wire[]): { x: number; y: number; wireId
   const seen = new Set<string>();
   const EPS = 3;
 
+  // Spatial grid bucket (cell size = 20px) for O(1) endpoint/segment lookup on huge circuits
+  const CELL = 20;
+  const endBuckets = new Map<number, { x: number; y: number; wireIdx: number }[]>();
+  const hSegBuckets = new Map<
+    number,
+    { wireIdx: number; y: number; xMin: number; xMax: number }[]
+  >();
+  const vSegBuckets = new Map<
+    number,
+    { wireIdx: number; x: number; yMin: number; yMax: number }[]
+  >();
+  const diagSegs: { wireIdx: number; a: Point; b: Point }[] = [];
+
+  const pushBucket = <T>(map: Map<number, T[]>, key: number, item: T) => {
+    let arr = map.get(key);
+    if (!arr) {
+      arr = [];
+      map.set(key, arr);
+    }
+    arr.push(item);
+  };
+
+  for (let j = 0; j < wires.length; j++) {
+    const wb = wires[j];
+    if (wb.points.length < 2) continue;
+    const wStart = wb.points[0];
+    const wEnd = wb.points[wb.points.length - 1];
+    pushBucket(endBuckets, packCell(Math.round(wStart.x / CELL), Math.round(wStart.y / CELL)), {
+      x: wStart.x,
+      y: wStart.y,
+      wireIdx: j,
+    });
+    if (Math.hypot(wEnd.x - wStart.x, wEnd.y - wStart.y) > EPS) {
+      pushBucket(endBuckets, packCell(Math.round(wEnd.x / CELL), Math.round(wEnd.y / CELL)), {
+        x: wEnd.x,
+        y: wEnd.y,
+        wireIdx: j,
+      });
+    }
+    for (let k = 0; k < wb.points.length - 1; k++) {
+      const a = wb.points[k];
+      const b = wb.points[k + 1];
+      if (Math.abs(a.y - b.y) <= 0.5) {
+        const yKey = Math.round(a.y / CELL);
+        pushBucket(hSegBuckets, yKey, {
+          wireIdx: j,
+          y: a.y,
+          xMin: Math.min(a.x, b.x),
+          xMax: Math.max(a.x, b.x),
+        });
+      } else if (Math.abs(a.x - b.x) <= 0.5) {
+        const xKey = Math.round(a.x / CELL);
+        pushBucket(vSegBuckets, xKey, {
+          wireIdx: j,
+          x: a.x,
+          yMin: Math.min(a.y, b.y),
+          yMax: Math.max(a.y, b.y),
+        });
+      } else {
+        diagSegs.push({ wireIdx: j, a, b });
+      }
+    }
+  }
+
   for (let i = 0; i < wires.length; i++) {
     const wa = wires[i];
     if (wa.points.length < 2) continue;
@@ -682,39 +1283,74 @@ export function findWireJunctions(wires: Wire[]): { x: number; y: number; wireId
       if (seen.has(key)) continue;
 
       let branchCount = 0;
-      for (let j = 0; j < wires.length; j++) {
-        const wb = wires[j];
-        if (wb.points.length < 2) continue;
-        const wStart = wb.points[0];
-        const wEnd = wb.points[wb.points.length - 1];
-        const nearStart = Math.hypot(ep.x - wStart.x, ep.y - wStart.y) <= EPS;
-        const nearEnd = Math.hypot(ep.x - wEnd.x, ep.y - wEnd.y) <= EPS;
-        if (nearStart || nearEnd) {
-          if (nearStart) branchCount += 1;
-          if (nearEnd && Math.hypot(wEnd.x - wStart.x, wEnd.y - wStart.y) > EPS) {
-            branchCount += 1;
+      const matchedWireEnd = new Set<number>();
+      const cx = Math.round(ep.x / CELL);
+      const cy = Math.round(ep.y / CELL);
+
+      // 1. Check nearby endpoints in 3x3 grid neighborhood
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+          const list = endBuckets.get(packCell(cx + dx, cy + dy));
+          if (!list) continue;
+          for (const item of list) {
+            if (Math.hypot(ep.x - item.x, ep.y - item.y) <= EPS) {
+              branchCount += 1;
+              matchedWireEnd.add(item.wireIdx);
+            }
           }
-          continue;
         }
-        // Check if ep lies strictly in the interior of any segment of wb -> enters & exits (+2 branches)
-        for (let k = 0; k < wb.points.length - 1; k++) {
-          const a = wb.points[k];
-          const b = wb.points[k + 1];
-          const minX = Math.min(a.x, b.x) - EPS;
-          const maxX = Math.max(a.x, b.x) + EPS;
-          const minY = Math.min(a.y, b.y) - EPS;
-          const maxY = Math.max(a.y, b.y) + EPS;
+      }
+
+      // 2. If < 3 already, check if ep lies strictly in interior of any horizontal/vertical/diagonal segment
+      if (branchCount < 3) {
+        for (let dy = -1; dy <= 1 && branchCount < 3; dy++) {
+          const hList = hSegBuckets.get(cy + dy);
+          if (!hList) continue;
+          for (const hs of hList) {
+            if (matchedWireEnd.has(hs.wireIdx)) continue;
+            if (Math.abs(ep.y - hs.y) <= EPS && ep.x >= hs.xMin - EPS && ep.x <= hs.xMax + EPS) {
+              branchCount += 2;
+              matchedWireEnd.add(hs.wireIdx);
+              if (branchCount >= 3) break;
+            }
+          }
+        }
+      }
+
+      if (branchCount < 3) {
+        for (let dx = -1; dx <= 1 && branchCount < 3; dx++) {
+          const vList = vSegBuckets.get(cx + dx);
+          if (!vList) continue;
+          for (const vs of vList) {
+            if (matchedWireEnd.has(vs.wireIdx)) continue;
+            if (Math.abs(ep.x - vs.x) <= EPS && ep.y >= vs.yMin - EPS && ep.y <= vs.yMax + EPS) {
+              branchCount += 2;
+              matchedWireEnd.add(vs.wireIdx);
+              if (branchCount >= 3) break;
+            }
+          }
+        }
+      }
+
+      if (branchCount < 3 && diagSegs.length > 0) {
+        for (const ds of diagSegs) {
+          if (matchedWireEnd.has(ds.wireIdx)) continue;
+          const minX = Math.min(ds.a.x, ds.b.x) - EPS;
+          const maxX = Math.max(ds.a.x, ds.b.x) + EPS;
+          const minY = Math.min(ds.a.y, ds.b.y) - EPS;
+          const maxY = Math.max(ds.a.y, ds.b.y) + EPS;
           if (ep.x >= minX && ep.x <= maxX && ep.y >= minY && ep.y <= maxY) {
-            const dx = b.x - a.x;
-            const dy = b.y - a.y;
+            const dx = ds.b.x - ds.a.x;
+            const dy = ds.b.y - ds.a.y;
             const len = Math.hypot(dx, dy);
             const dist =
               len < 1e-6
-                ? Math.hypot(ep.x - a.x, ep.y - a.y)
-                : Math.abs((ep.x - a.x) * dy - (ep.y - a.y) * dx) / len;
+                ? Math.hypot(ep.x - ds.a.x, ep.y - ds.a.y)
+                : Math.abs((ep.x - ds.a.x) * dy - (ep.y - ds.a.y) * dx) / len;
             if (dist <= EPS) {
               branchCount += 2;
-              break;
+              matchedWireEnd.add(ds.wireIdx);
+              if (branchCount >= 3) break;
             }
           }
         }
