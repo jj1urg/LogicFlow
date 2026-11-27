@@ -78,6 +78,9 @@ export const LiveSubcircuitPopup: React.FC<LiveSubcircuitPopupProps> = ({
   resolvedRef.current = resolved;
   const projectRef = useRef(project);
   projectRef.current = project;
+  const inputModeRef = useRef(project.settings.inputMode ?? 'auto');
+  inputModeRef.current = project.settings.inputMode ?? 'auto';
+  const lastTrackpadTsRef = useRef<number>(0);
 
   const fitCircuitToPopup = useCallback(() => {
     const wrap = canvasWrapRef.current;
@@ -210,39 +213,163 @@ export const LiveSubcircuitPopup: React.FC<LiveSubcircuitPopupProps> = ({
     };
   }, []);
 
-  // Wheel zoom & trackpad pan inside the popup canvas
+  // Wheel zoom & pan inside the popup canvas (respects project.settings.inputMode: auto / trackpad / mouse!)
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const onWheel = (e: WheelEvent) => {
-      e.preventDefault();
-      const rect = canvas.getBoundingClientRect();
-      const sx = e.clientX - rect.left;
-      const sy = e.clientY - rect.top;
-      const vp = viewportRef.current;
 
-      if (e.ctrlKey || Math.abs(e.deltaX) < 1) {
-        const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
-        const nextZoom = Math.max(0.15, Math.min(3.5, vp.zoom * factor));
-        const wx = (sx - vp.x) / vp.zoom;
-        const wy = (sy - vp.y) / vp.zoom;
-        viewportRef.current = {
-          x: sx - wx * nextZoom,
-          y: sy - wy * nextZoom,
-          zoom: nextZoom,
-        };
-        setZoomPct(Math.round(nextZoom * 100));
-      } else {
-        viewportRef.current = {
-          ...vp,
-          x: vp.x - e.deltaX,
-          y: vp.y - e.deltaY,
-        };
-      }
+    const zoomAtClientPt = (clientX: number, clientY: number, factor: number) => {
+      const rect = canvas.getBoundingClientRect();
+      const sx = clientX - rect.left;
+      const sy = clientY - rect.top;
+      const vp = viewportRef.current;
+      const nextZoom = Math.max(0.15, Math.min(3.5, vp.zoom * factor));
+      const wx = (sx - vp.x) / vp.zoom;
+      const wy = (sy - vp.y) / vp.zoom;
+      viewportRef.current = {
+        x: sx - wx * nextZoom,
+        y: sy - wy * nextZoom,
+        zoom: nextZoom,
+      };
+      setZoomPct(Math.round(nextZoom * 100));
       setRenderTick((t) => t + 1);
     };
+
+    const panBy = (dx: number, dy: number) => {
+      const vp = viewportRef.current;
+      viewportRef.current = {
+        ...vp,
+        x: vp.x - dx,
+        y: vp.y - dy,
+      };
+      setRenderTick((t) => t + 1);
+    };
+
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+
+      const scale = e.deltaMode === 1 ? 32 : e.deltaMode === 2 ? 400 : 1;
+      const dx = e.deltaX * scale;
+      const dy = e.deltaY * scale;
+      const mode = inputModeRef.current;
+
+      // 1. Trackpad pinch-to-zoom (Ctrl+Wheel) or Meta+Wheel -> Always zoom popup canvas
+      if (e.ctrlKey || e.metaKey) {
+        const factor = Math.max(0.75, Math.min(1.35, Math.exp(-dy * 0.01)));
+        zoomAtClientPt(e.clientX, e.clientY, factor);
+        return;
+      }
+
+      // 2. Explicit Trackpad mode -> 2-finger scroll always pans
+      if (mode === 'trackpad') {
+        panBy(dx, dy);
+        return;
+      }
+
+      // 3. Explicit Mouse mode -> Wheel zooms (Shift+Wheel pans horizontally)
+      if (mode === 'mouse') {
+        if (e.shiftKey) {
+          panBy(dx || dy, 0);
+          return;
+        }
+        const factor = dy < 0 ? 1.12 : 1 / 1.12;
+        zoomAtClientPt(e.clientX, e.clientY, factor);
+        return;
+      }
+
+      // 4. Auto mode: match CircuitCanvas heuristic so 2-finger vertical scroll never triggers zoom!
+      const now = performance.now();
+      const looksLikeTrackpad =
+        Math.abs(e.deltaX) > 0 ||
+        (e.deltaMode === 0 && (!Number.isInteger(e.deltaY) || Math.abs(e.deltaY) < 42)) ||
+        now - lastTrackpadTsRef.current < 350;
+
+      if (looksLikeTrackpad) {
+        lastTrackpadTsRef.current = now;
+        panBy(dx, dy);
+      } else {
+        const factor = dy < 0 ? 1.12 : 1 / 1.12;
+        zoomAtClientPt(e.clientX, e.clientY, factor);
+      }
+    };
+
+    // Safari / WebKit trackpad pinch gestures
+    let lastGestureScale = 1;
+    const onGestureStart = (e: Event) => {
+      e.preventDefault();
+      lastGestureScale = 1;
+    };
+    const onGestureChange = (e: Event) => {
+      e.preventDefault();
+      const ge = e as unknown as { scale?: number; clientX?: number; clientY?: number };
+      if (typeof ge.scale === 'number' && ge.scale > 0) {
+        const factor = ge.scale / lastGestureScale;
+        lastGestureScale = ge.scale;
+        const rect = canvas.getBoundingClientRect();
+        zoomAtClientPt(
+          ge.clientX ?? rect.left + rect.width / 2,
+          ge.clientY ?? rect.top + rect.height / 2,
+          factor,
+        );
+      }
+    };
+
+    // Two-finger touchscreen pinch & pan
+    let touchState: { dist: number; cx: number; cy: number } | null = null;
+    const onTouchStart = (e: TouchEvent) => {
+      if (e.touches.length === 2) {
+        e.preventDefault();
+        const [t1, t2] = [e.touches[0], e.touches[1]];
+        touchState = {
+          dist: Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY),
+          cx: (t1.clientX + t2.clientX) / 2,
+          cy: (t1.clientY + t2.clientY) / 2,
+        };
+      }
+    };
+    const onTouchMove = (e: TouchEvent) => {
+      if (e.touches.length === 2 && touchState) {
+        e.preventDefault();
+        const [t1, t2] = [e.touches[0], e.touches[1]];
+        const dist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+        const cx = (t1.clientX + t2.clientX) / 2;
+        const cy = (t1.clientY + t2.clientY) / 2;
+        const panDx = cx - touchState.cx;
+        const panDy = cy - touchState.cy;
+        const factor = touchState.dist > 1 ? dist / touchState.dist : 1;
+        const rect = canvas.getBoundingClientRect();
+        const sx = cx - rect.left;
+        const sy = cy - rect.top;
+        const vp = viewportRef.current;
+        const movedX = vp.x + panDx;
+        const movedY = vp.y + panDy;
+        const nextZoom = Math.max(0.15, Math.min(3.5, vp.zoom * factor));
+        const wx = (sx - movedX) / vp.zoom;
+        const wy = (sy - movedY) / vp.zoom;
+        viewportRef.current = { zoom: nextZoom, x: sx - wx * nextZoom, y: sy - wy * nextZoom };
+        setZoomPct(Math.round(nextZoom * 100));
+        setRenderTick((t) => t + 1);
+        touchState = { dist, cx, cy };
+      }
+    };
+    const onTouchEnd = (e: TouchEvent) => {
+      if (e.touches.length < 2) touchState = null;
+    };
+
     canvas.addEventListener('wheel', onWheel, { passive: false });
-    return () => canvas.removeEventListener('wheel', onWheel);
+    canvas.addEventListener('gesturestart', onGestureStart, { passive: false });
+    canvas.addEventListener('gesturechange', onGestureChange, { passive: false });
+    canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+    canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+    canvas.addEventListener('touchend', onTouchEnd);
+    return () => {
+      canvas.removeEventListener('wheel', onWheel);
+      canvas.removeEventListener('gesturestart', onGestureStart);
+      canvas.removeEventListener('gesturechange', onGestureChange);
+      canvas.removeEventListener('touchstart', onTouchStart);
+      canvas.removeEventListener('touchmove', onTouchMove);
+      canvas.removeEventListener('touchend', onTouchEnd);
+    };
   }, []);
 
   if (!resolved) return null;
