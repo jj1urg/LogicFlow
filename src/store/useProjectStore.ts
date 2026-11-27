@@ -100,6 +100,35 @@ export function useProjectStore() {
 
   // Sequential state persisted per circuitId
   const seqStatesRef = useRef<Record<string, SequentialState>>({});
+  // MRU stack of visited circuit tab IDs so closing the active tab returns to the previously viewed tab
+  const tabHistoryRef = useRef<string[]>([project.activeCircuitId]);
+
+  useEffect(() => {
+    const id = project.activeCircuitId;
+    if (!id) return;
+    const prev = tabHistoryRef.current;
+    if (prev[prev.length - 1] !== id) {
+      tabHistoryRef.current = [...prev.filter((x) => x !== id), id];
+    }
+  }, [project.activeCircuitId]);
+
+  const pickPreviousTab = useCallback(
+    (closedId: string, remainingTabs: string[], circuits: Record<string, CircuitDocument>) => {
+      tabHistoryRef.current = tabHistoryRef.current.filter((id) => id !== closedId);
+      for (let i = tabHistoryRef.current.length - 1; i >= 0; i--) {
+        const cand = tabHistoryRef.current[i];
+        if (cand !== closedId && remainingTabs.includes(cand) && circuits[cand]) {
+          return cand;
+        }
+      }
+      return (
+        remainingTabs[remainingTabs.length - 1] ??
+        Object.values(circuits).find((c) => !c.isStub)?.id ??
+        Object.keys(circuits)[0]
+      );
+    },
+    [],
+  );
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -393,7 +422,7 @@ export function useProjectStore() {
             delete d.circuits[circuitId];
           }
           if (d.activeCircuitId === circuitId) {
-            d.activeCircuitId = nextTabs[0] ?? Object.keys(d.circuits)[0];
+            d.activeCircuitId = pickPreviousTab(circuitId, nextTabs, d.circuits);
           }
         },
         !isReferenced,
@@ -405,7 +434,7 @@ export function useProjectStore() {
       setSelectedGateIds(new Set());
       setSelectedWireIds(new Set());
     },
-    [mutateProject, project.circuits, project.openTabIds, showToast],
+    [mutateProject, pickPreviousTab, project.circuits, project.openTabIds, showToast],
   );
 
   const updateSymbolConfig = useCallback(
@@ -1084,10 +1113,8 @@ export function useProjectStore() {
           }
         }
         if (d.activeCircuitId === circuitId) {
-          const fallback =
-            d.openTabIds?.find((id) => Boolean(d.circuits[id])) ??
-            Object.values(d.circuits).find((c) => !c.isStub)?.id ??
-            Object.keys(d.circuits)[0];
+          const remaining = d.openTabIds?.filter((id) => Boolean(d.circuits[id])) ?? [];
+          const fallback = pickPreviousTab(circuitId, remaining, d.circuits);
           d.activeCircuitId = fallback;
           if (d.openTabIds && !d.openTabIds.includes(fallback)) {
             d.openTabIds.push(fallback);
@@ -1098,7 +1125,7 @@ export function useProjectStore() {
       setSelectedWireIds(new Set());
       showToast(`モジュール "${target.name}" を削除しました`);
     },
-    [mutateProject, project.circuits, showToast],
+    [mutateProject, pickPreviousTab, project.circuits, showToast],
   );
 
   /** Delete an entire HDL project bundle (all its modules, stubs, and tabs) at once */

@@ -25,6 +25,8 @@ import {
   hasWatchedSignalsChanged,
   makePinWatchId,
   makeWireWatchId,
+  parseStoredWatchTargets,
+  pruneWatchTargets,
   sampleWatchedSignals,
   WatchTarget,
   WaveformStep,
@@ -113,13 +115,40 @@ export const App: React.FC = () => {
   const [showShortcutsModal, setShowShortcutsModal] = useState(false);
   const [hdlSourceCircuitId, setHdlSourceCircuitId] = useState<string | null>(null);
   const [hdlDockPos, setHdlDockPos] = useState<HdlDockPosition>('bottom');
+  const WATCH_STORAGE_KEY = 'logicflow_watch_v1';
   const [livePopupPath, setLivePopupPath] = useState<string[] | null>(null);
   const [showWatchPanel, setShowWatchPanel] = useState(false);
-  const [watchTargets, setWatchTargets] = useState<WatchTarget[]>([]);
+  const [watchTargets, setWatchTargets] = useState<WatchTarget[]>(() => {
+    try {
+      return pruneWatchTargets(
+        parseStoredWatchTargets(localStorage.getItem(WATCH_STORAGE_KEY)),
+        project,
+      );
+    } catch {
+      return [];
+    }
+  });
   const [waveHistoryByCircuit, setWaveHistoryByCircuit] = useState<Record<string, WaveformStep[]>>(
     {},
   );
   const [watchRecording, setWatchRecording] = useState(true);
+
+  // Prune watch targets if referenced circuits/wires/gates are removed or another project is loaded
+  useEffect(() => {
+    setWatchTargets((prev) => {
+      const pruned = pruneWatchTargets(prev, project);
+      return pruned.length === prev.length ? prev : pruned;
+    });
+  }, [project]);
+
+  // Persist watch list to localStorage so watched signals and their order survive browser reloads
+  useEffect(() => {
+    try {
+      localStorage.setItem(WATCH_STORAGE_KEY, JSON.stringify(watchTargets));
+    } catch {
+      // ignore storage quota errors
+    }
+  }, [watchTargets]);
   const [memoryGateId, setMemoryGateId] = useState<string | null>(null);
   const [draggingGate, setDraggingGate] = useState<DragGatePayload | null>(null);
   const [dragCursor, setDragCursor] = useState<{ x: number; y: number } | null>(null);

@@ -8,6 +8,8 @@ import {
   hasWatchedSignalsChanged,
   makePinWatchId,
   makeWireWatchId,
+  parseStoredWatchTargets,
+  pruneWatchTargets,
   resolveLiveSubcircuitPath,
   sampleWatchedSignals,
   WatchTarget,
@@ -284,5 +286,56 @@ describe('Live Subcircuit Popup & Signal Watch / Waveform Helpers', () => {
         proj,
       ),
     ).toBeNull();
+  });
+
+  it('5. parses and prunes persisted watch lists safely while preserving order and radix', () => {
+    const src = `
+      module watch_persist(input logic a, output logic y);
+        assign y = ~a;
+      endmodule
+    `;
+    const res = importVerilogToCircuits(src);
+    const proj = makeProject(res.circuits, res.topCircuitId);
+    const topDoc = proj.circuits[res.topCircuitId];
+    const inA = topDoc.gates.find((g) => g.label === 'a')!;
+    const w0 = topDoc.wires[0];
+
+    const saved: WatchTarget[] = [
+      {
+        id: makeWireWatchId(topDoc.id, w0.id),
+        circuitId: topDoc.id,
+        kind: 'wire',
+        wireId: w0.id,
+        label: 'w_sig',
+        radix: 'hex',
+      },
+      {
+        id: 'wire:missing_circ:w999',
+        circuitId: 'missing_circ',
+        kind: 'wire',
+        wireId: 'w999',
+        label: 'stale_wire',
+        radix: 'bin',
+      },
+      {
+        id: makePinWatchId(topDoc.id, inA.id, 'out'),
+        circuitId: topDoc.id,
+        kind: 'pin',
+        gateId: inA.id,
+        pinId: 'out',
+        label: 'a',
+        radix: 'signed',
+      },
+    ];
+
+    const parsed = parseStoredWatchTargets(JSON.stringify(saved));
+    expect(parsed).toHaveLength(3);
+    const pruned = pruneWatchTargets(parsed, proj);
+    expect(pruned.map((t) => t.label)).toEqual(['w_sig', 'a']);
+    expect(pruned.map((t) => t.radix)).toEqual(['hex', 'signed']);
+
+    // Corrupted JSON or invalid objects return empty safely
+    expect(parseStoredWatchTargets('{bad json')).toEqual([]);
+    expect(parseStoredWatchTargets(null)).toEqual([]);
   });
 });

@@ -926,7 +926,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
     const gateHit = hitTestGate(worldPt, circuit, project);
     if (gateHit?.type === 'SUBCIRCUIT' && gateHit.props.subcircuitId) {
       const subDoc = project.circuits[gateHit.props.subcircuitId];
-      if (e.shiftKey && subDoc && !subDoc.isStub) {
+      if (!e.shiftKey && subDoc && !subDoc.isStub) {
         onOpenLiveSubcircuitPopup(gateHit.id);
       } else {
         onOpenSubcircuit(gateHit.props.subcircuitId);

@@ -15,6 +15,7 @@ generated:
 
 ## about fixes
 
+
 ## aboud features
 
 * PWA有効化の検討

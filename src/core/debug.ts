@@ -263,3 +263,58 @@ export function formatWatchValue(val: LogicValue | undefined, radix: WatchRadix)
   }
   return formatValue(val, radix);
 }
+
+const VALID_RADICES = new Set<WatchRadix>(['auto', 'bin', 'hex', 'dec', 'signed']);
+
+/** Safely parse a serialized WatchTarget[] JSON string (e.g. from localStorage) */
+export function parseStoredWatchTargets(raw: string | null | undefined): WatchTarget[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const seen = new Set<string>();
+    const out: WatchTarget[] = [];
+    for (const item of parsed) {
+      if (!item || typeof item !== 'object') continue;
+      const t = item as Partial<WatchTarget>;
+      if (typeof t.id !== 'string' || !t.id || seen.has(t.id)) continue;
+      if (typeof t.circuitId !== 'string' || !t.circuitId) continue;
+      if (t.kind !== 'wire' && t.kind !== 'pin') continue;
+      if (t.kind === 'wire' && (typeof t.wireId !== 'string' || !t.wireId)) continue;
+      if (
+        t.kind === 'pin' &&
+        (typeof t.gateId !== 'string' || !t.gateId || typeof t.pinId !== 'string' || !t.pinId)
+      ) {
+        continue;
+      }
+      const radix: WatchRadix = t.radix && VALID_RADICES.has(t.radix) ? t.radix : 'auto';
+      const label = typeof t.label === 'string' && t.label.trim() ? t.label.trim() : t.id;
+      seen.add(t.id);
+      out.push({
+        id: t.id,
+        circuitId: t.circuitId,
+        kind: t.kind,
+        wireId: t.wireId,
+        gateId: t.gateId,
+        pinId: t.pinId,
+        label,
+        radix,
+      });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/** Drop watch targets whose circuit, wire, or gate no longer exists in `project` while preserving order */
+export function pruneWatchTargets(targets: WatchTarget[], project: ProjectDocument): WatchTarget[] {
+  return targets.filter((t) => {
+    const circ = project.circuits[t.circuitId];
+    if (!circ) return false;
+    if (t.kind === 'wire') {
+      return Boolean(t.wireId && circ.wires.some((w) => w.id === t.wireId));
+    }
+    return Boolean(t.gateId && circ.gates.some((g) => g.id === t.gateId));
+  });
+}
