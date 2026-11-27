@@ -126,6 +126,8 @@ export interface GateProps {
   displayMode?: SubcircuitDisplayMode;
   /** Clock phase / enabled */
   clockHigh?: boolean;
+  /** Whether multi-bit ADDER exposes a Carry-In (Cin) pin (defaults to true when omitted for backward compatibility) */
+  hasCarryIn?: boolean;
 }
 
 export interface GateInstance {

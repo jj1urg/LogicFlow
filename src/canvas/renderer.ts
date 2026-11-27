@@ -755,13 +755,40 @@ function drawGate(
       drawMuxShape(ctx, hw, hh, gate.type, isSelected);
       break;
     case 'TOGGLE':
-      drawToggleGate(ctx, hw, hh, gate, outVal, showSignals, state.runtimeInputs?.[gate.id]);
+      drawToggleGate(
+        ctx,
+        hw,
+        hh,
+        gate,
+        outVal,
+        outXCause,
+        showSignals,
+        state.runtimeInputs?.[gate.id],
+      );
       break;
     case 'BUTTON':
-      drawButtonGate(ctx, hw, hh, gate, outVal, showSignals, state.runtimeInputs?.[gate.id]);
+      drawButtonGate(
+        ctx,
+        hw,
+        hh,
+        gate,
+        outVal,
+        outXCause,
+        showSignals,
+        state.runtimeInputs?.[gate.id],
+      );
       break;
     case 'CLOCK':
-      drawClockGate(ctx, hw, hh, gate, outVal, showSignals, state.runtimeInputs?.[gate.id]);
+      drawClockGate(
+        ctx,
+        hw,
+        hh,
+        gate,
+        outVal,
+        outXCause,
+        showSignals,
+        state.runtimeInputs?.[gate.id],
+      );
       break;
     case 'CONST':
       drawConstGate(ctx, hw, hh, gate, outVal, showSignals);
@@ -1050,14 +1077,16 @@ function drawToggleGate(
   hh: number,
   gate: GateInstance,
   val: LogicValue | undefined,
+  xCause: XCause | undefined,
   showSignals: boolean,
   rt?: RuntimeInputOverride,
 ) {
   const bw = gate.props.bitWidth ?? 1;
-  const effectiveVal =
-    showSignals && val ? val : fromLiteral(rt?.value ?? gate.props.value ?? '0', bw);
-  const effectiveBit = dominantState(effectiveVal);
-  const sig = signalColor(val, showSignals);
+  // Physical switch position always reflects the switch's own driven setting (even when the net resolves to X)
+  const drivenVal = fromLiteral(rt?.value ?? gate.props.value ?? '0', bw);
+  const drivenBit = dominantState(drivenVal);
+  const sig = signalColor(val, showSignals, xCause);
+  const isUnknownNet = showSignals && sig.bit === BIT_X;
 
   roundRect(ctx, -hw, -hh, hw * 2, hh * 2, 8);
   ctx.fillStyle = '#1e293b';
@@ -1065,35 +1094,57 @@ function drawToggleGate(
   // In Edit mode (!showSignals), keep outer frame neutral (or softly tinted when ON) so Edit vs Live is clear
   ctx.strokeStyle = showSignals
     ? sig.color
-    : effectiveBit === BIT_1
+    : drivenBit === BIT_1
       ? 'rgba(74, 222, 128, 0.5)'
       : '#475569';
   ctx.lineWidth = 2;
   ctx.stroke();
 
   if (bw === 1) {
-    const isOn = effectiveBit === BIT_1;
-    // Tactile toggle pill inside — stays visibly ON (shifted right + soft green) even in Edit mode!
+    const isOn = drivenBit === BIT_1;
+    // Tactile toggle pill inside — stays visibly ON (shifted right) even if net resolves to X or in Edit mode!
     roundRect(ctx, -18, -9, 36, 18, 9);
     ctx.fillStyle = isOn
-      ? showSignals
-        ? 'rgba(34, 197, 94, 0.28)'
-        : 'rgba(74, 222, 128, 0.16)'
+      ? isUnknownNet
+        ? sig.glow
+        : showSignals
+          ? 'rgba(34, 197, 94, 0.28)'
+          : 'rgba(74, 222, 128, 0.16)'
       : '#0f172a';
     ctx.fill();
-    ctx.strokeStyle = isOn ? (showSignals ? '#22c55e' : 'rgba(74, 222, 128, 0.6)') : '#475569';
+    ctx.strokeStyle = isOn
+      ? isUnknownNet
+        ? sig.color
+        : showSignals
+          ? '#22c55e'
+          : 'rgba(74, 222, 128, 0.6)'
+      : isUnknownNet
+        ? sig.color
+        : '#475569';
     ctx.lineWidth = 1.5;
     ctx.stroke();
     ctx.beginPath();
     ctx.arc(isOn ? 9 : -9, 0, 6.5, 0, Math.PI * 2);
-    ctx.fillStyle = isOn ? (showSignals ? '#22c55e' : '#86efac') : '#94a3b8';
+    ctx.fillStyle = isOn
+      ? isUnknownNet
+        ? sig.color
+        : showSignals
+          ? '#22c55e'
+          : '#86efac'
+      : '#94a3b8';
     ctx.fill();
   } else {
-    ctx.fillStyle = showSignals ? '#f8fafc' : effectiveBit === BIT_1 ? '#bbf7d0' : '#cbd5e1';
+    ctx.fillStyle = isUnknownNet
+      ? sig.color
+      : showSignals
+        ? '#f8fafc'
+        : drivenBit === BIT_1
+          ? '#bbf7d0'
+          : '#cbd5e1';
     ctx.font = '700 12px ui-monospace, monospace';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(formatValue(effectiveVal, 'hex'), 0, 0);
+    ctx.fillText(formatValue(drivenVal, 'hex'), 0, 0);
   }
 }
 
@@ -1103,11 +1154,13 @@ function drawButtonGate(
   hh: number,
   gate: GateInstance,
   val: LogicValue | undefined,
+  xCause: XCause | undefined,
   showSignals: boolean,
   rt?: RuntimeInputOverride,
 ) {
-  const sig = signalColor(val, showSignals);
-  const pressed = showSignals ? sig.bit === BIT_1 : !!(rt?.pressed ?? gate.props.pressed);
+  const sig = signalColor(val, showSignals, xCause);
+  const pressed = !!(rt?.pressed ?? gate.props.pressed);
+  const isUnknownNet = showSignals && sig.bit === BIT_X;
 
   roundRect(ctx, -hw, -hh, hw * 2, hh * 2, 8);
   ctx.fillStyle = '#1e293b';
@@ -1116,12 +1169,24 @@ function drawButtonGate(
   ctx.lineWidth = 2;
   ctx.stroke();
 
-  // Tactile press-in animation works in Edit mode too without running simulation!
+  // Tactile press-in animation works in Edit mode and under X contention too!
   ctx.beginPath();
   ctx.arc(0, 0, pressed ? 10.5 : 13, 0, Math.PI * 2);
-  ctx.fillStyle = pressed ? (showSignals ? '#22c55e' : '#4ade80') : '#334155';
+  ctx.fillStyle = pressed
+    ? isUnknownNet
+      ? sig.color
+      : showSignals
+        ? '#22c55e'
+        : '#4ade80'
+    : '#334155';
   ctx.fill();
-  ctx.strokeStyle = pressed ? (showSignals ? '#86efac' : '#bbf7d0') : '#64748b';
+  ctx.strokeStyle = pressed
+    ? isUnknownNet
+      ? sig.color
+      : showSignals
+        ? '#86efac'
+        : '#bbf7d0'
+    : '#64748b';
   ctx.lineWidth = 2;
   ctx.stroke();
 }
@@ -1132,11 +1197,13 @@ function drawClockGate(
   hh: number,
   gate: GateInstance,
   val: LogicValue | undefined,
+  xCause: XCause | undefined,
   showSignals: boolean,
   rt?: RuntimeInputOverride,
 ) {
-  const sig = signalColor(val, showSignals);
-  const clockHigh = showSignals ? sig.bit === BIT_1 : !!(rt?.clockHigh ?? gate.props.clockHigh);
+  const sig = signalColor(val, showSignals, xCause);
+  const clockHigh = !!(rt?.clockHigh ?? gate.props.clockHigh);
+  const isUnknownNet = showSignals && sig.bit === BIT_X;
   roundRect(ctx, -hw, -hh, hw * 2, hh * 2, 8);
   ctx.fillStyle = '#1e293b';
   ctx.fill();
@@ -1154,7 +1221,13 @@ function drawClockGate(
   ctx.lineTo(10, 6);
   ctx.lineTo(10, -6);
   ctx.lineTo(16, -6);
-  ctx.strokeStyle = clockHigh ? (showSignals ? '#22c55e' : '#86efac') : '#94a3b8';
+  ctx.strokeStyle = clockHigh
+    ? isUnknownNet
+      ? sig.color
+      : showSignals
+        ? '#22c55e'
+        : '#86efac'
+    : '#94a3b8';
   ctx.lineWidth = 2;
   ctx.stroke();
 }

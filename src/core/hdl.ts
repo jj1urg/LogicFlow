@@ -1949,12 +1949,13 @@ function buildExprGate(exprRaw: string, ctx: SynthContext, bitWidth: number): st
         lvl.kind === 'LE' ||
         lvl.kind === 'GE'
       ) {
-        const cmpW = Math.max(
-          inferExprWidth(lhsStr, ctx.netWidths, 1, ctx.params),
-          inferExprWidth(rhsStr, ctx.netWidths, 1, ctx.params),
-        );
-        const leftNet = buildExprGate(lhsStr, ctx, cmpW);
-        const rightNet = buildExprGate(rhsStr, ctx, cmpW);
+        const leftW = inferExprWidth(lhsStr, ctx.netWidths, 1, ctx.params);
+        const rightW = inferExprWidth(rhsStr, ctx.netWidths, 1, ctx.params);
+        const cmpW = Math.max(leftW, rightW);
+        const leftRaw = buildExprGate(lhsStr, ctx, cmpW);
+        const rightRaw = buildExprGate(rhsStr, ctx, cmpW);
+        const leftNet = zeroExtendNet(leftRaw, ctx.netWidths.get(leftRaw) ?? cmpW, cmpW, ctx);
+        const rightNet = zeroExtendNet(rightRaw, ctx.netWidths.get(rightRaw) ?? cmpW, cmpW, ctx);
         const cmpId = uid('g');
         ctx.gates.push({
           id: cmpId,
@@ -1998,8 +1999,35 @@ function buildExprGate(exprRaw: string, ctx: SynthContext, bitWidth: number): st
 
       if (lvl.kind === 'SUB') {
         // Two's complement subtraction: a - b = a + (~b) + 1'b1
-        const leftNet = buildExprGate(lhsStr, ctx, bitWidth);
-        const invRightNet = buildExprGate(`~(${rhsStr})`, ctx, bitWidth);
+        const leftRaw = buildExprGate(lhsStr, ctx, bitWidth);
+        const leftNet = zeroExtendNet(
+          leftRaw,
+          ctx.netWidths.get(leftRaw) ?? bitWidth,
+          bitWidth,
+          ctx,
+        );
+        const rightRaw = buildExprGate(rhsStr, ctx, bitWidth);
+        const rightExt = zeroExtendNet(
+          rightRaw,
+          ctx.netWidths.get(rightRaw) ?? bitWidth,
+          bitWidth,
+          ctx,
+        );
+        const notId = uid('g');
+        ctx.gates.push({
+          id: notId,
+          type: 'NOT',
+          x: 0,
+          y: 0,
+          rotation: 0,
+          label: '',
+          props: { bitWidth },
+        });
+        addNetSink(ctx.netPinMap, rightExt, { gateId: notId, pinId: 'in0' });
+        const invRightNet = `__subinv_${notId}`;
+        addNetDriver(ctx.netPinMap, invRightNet, { gateId: notId, pinId: 'out' });
+        ctx.netWidths.set(invRightNet, bitWidth);
+
         const oneNet = buildExprGate("1'b1", ctx, 1);
         const gid = uid('g');
         ctx.gates.push({
@@ -2009,7 +2037,7 @@ function buildExprGate(exprRaw: string, ctx: SynthContext, bitWidth: number): st
           y: 0,
           rotation: 0,
           label: 'SUB',
-          props: { bitWidth },
+          props: { bitWidth, hasCarryIn: true },
         });
         addNetSink(ctx.netPinMap, leftNet, { gateId: gid, pinId: 'a' });
         addNetSink(ctx.netPinMap, invRightNet, { gateId: gid, pinId: 'b' });
@@ -2020,10 +2048,95 @@ function buildExprGate(exprRaw: string, ctx: SynthContext, bitWidth: number): st
         return outNet;
       }
 
+      if (lvl.kind === 'ADDER') {
+        const leftW = inferExprWidth(lhsStr, ctx.netWidths, bitWidth, ctx.params);
+        const rightW = inferExprWidth(rhsStr, ctx.netWidths, bitWidth, ctx.params);
+        const opW = Math.max(leftW, rightW);
+
+        // Carry-capturing addition idiom: e.g. `logic [4:0] sum = a[3:0] + b[3:0];`
+        // Synthesize an `opW`-bit carryless ADDER (or 1-bit HALF_ADDER) and merge `{cout, s}` into `bitWidth` bits!
+        if (bitWidth === opW + 1 && opW >= 1) {
+          const leftRaw = buildExprGate(lhsStr, ctx, opW);
+          const rightRaw = buildExprGate(rhsStr, ctx, opW);
+          const leftNet = zeroExtendNet(leftRaw, ctx.netWidths.get(leftRaw) ?? opW, opW, ctx);
+          const rightNet = zeroExtendNet(rightRaw, ctx.netWidths.get(rightRaw) ?? opW, opW, ctx);
+          const gid = uid('g');
+          const gateType: GateType = opW === 1 ? 'HALF_ADDER' : 'ADDER';
+          ctx.gates.push({
+            id: gid,
+            type: gateType,
+            x: 0,
+            y: 0,
+            rotation: 0,
+            label: '',
+            props: gateType === 'ADDER' ? { bitWidth: opW, hasCarryIn: false } : { bitWidth: 1 },
+          });
+          addNetSink(ctx.netPinMap, leftNet, { gateId: gid, pinId: 'a' });
+          addNetSink(ctx.netPinMap, rightNet, { gateId: gid, pinId: 'b' });
+          const sumNet = `__add_s_${gid}`;
+          const coutNet = `__add_c_${gid}`;
+          addNetDriver(ctx.netPinMap, sumNet, { gateId: gid, pinId: 's' });
+          addNetDriver(ctx.netPinMap, coutNet, {
+            gateId: gid,
+            pinId: gateType === 'HALF_ADDER' ? 'c' : 'cout',
+          });
+          ctx.netWidths.set(sumNet, opW);
+          ctx.netWidths.set(coutNet, 1);
+
+          const splId = uid('cat');
+          ctx.gates.push({
+            id: splId,
+            type: 'SPLITTER',
+            x: 0,
+            y: 0,
+            rotation: 0,
+            label: 'CONCAT',
+            props: { splitMode: 'merge', splitWidths: [opW, 1], bitWidth },
+          });
+          addNetSink(ctx.netPinMap, sumNet, { gateId: splId, pinId: 'b0' });
+          addNetSink(ctx.netPinMap, coutNet, { gateId: splId, pinId: 'b1' });
+          const outNet = `__op_${gid}`;
+          addNetDriver(ctx.netPinMap, outNet, { gateId: splId, pinId: 'bus' });
+          ctx.netWidths.set(outNet, bitWidth);
+          return outNet;
+        }
+
+        const leftRaw = buildExprGate(lhsStr, ctx, bitWidth);
+        const rightRaw = buildExprGate(rhsStr, ctx, bitWidth);
+        const leftNet = zeroExtendNet(
+          leftRaw,
+          ctx.netWidths.get(leftRaw) ?? bitWidth,
+          bitWidth,
+          ctx,
+        );
+        const rightNet = zeroExtendNet(
+          rightRaw,
+          ctx.netWidths.get(rightRaw) ?? bitWidth,
+          bitWidth,
+          ctx,
+        );
+        const gid = uid('g');
+        const gateType: GateType = bitWidth === 1 ? 'HALF_ADDER' : 'ADDER';
+        ctx.gates.push({
+          id: gid,
+          type: gateType,
+          x: 0,
+          y: 0,
+          rotation: 0,
+          label: '',
+          props: gateType === 'ADDER' ? { bitWidth, hasCarryIn: false } : { bitWidth: 1 },
+        });
+        addNetSink(ctx.netPinMap, leftNet, { gateId: gid, pinId: 'a' });
+        addNetSink(ctx.netPinMap, rightNet, { gateId: gid, pinId: 'b' });
+        const outNet = `__op_${gid}`;
+        addNetDriver(ctx.netPinMap, outNet, { gateId: gid, pinId: 's' });
+        ctx.netWidths.set(outNet, bitWidth);
+        return outNet;
+      }
+
       const leftNet = buildExprGate(lhsStr, ctx, bitWidth);
       const rightNet = buildExprGate(rhsStr, ctx, bitWidth);
       const gid = uid('g');
-      const isAdder = lvl.kind === 'ADDER';
       ctx.gates.push({
         id: gid,
         type: lvl.kind,
@@ -2031,12 +2144,12 @@ function buildExprGate(exprRaw: string, ctx: SynthContext, bitWidth: number): st
         y: 0,
         rotation: 0,
         label: '',
-        props: isAdder ? { bitWidth } : { bitWidth, inputCount: 2 },
+        props: { bitWidth, inputCount: 2 },
       });
-      addNetSink(ctx.netPinMap, leftNet, { gateId: gid, pinId: isAdder ? 'a' : 'in0' });
-      addNetSink(ctx.netPinMap, rightNet, { gateId: gid, pinId: isAdder ? 'b' : 'in1' });
+      addNetSink(ctx.netPinMap, leftNet, { gateId: gid, pinId: 'in0' });
+      addNetSink(ctx.netPinMap, rightNet, { gateId: gid, pinId: 'in1' });
       const outNet = `__op_${gid}`;
-      addNetDriver(ctx.netPinMap, outNet, { gateId: gid, pinId: isAdder ? 's' : 'out' });
+      addNetDriver(ctx.netPinMap, outNet, { gateId: gid, pinId: 'out' });
       ctx.netWidths.set(outNet, bitWidth);
       return outNet;
     }
@@ -2128,6 +2241,42 @@ function buildExprGate(exprRaw: string, ctx: SynthContext, bitWidth: number): st
   return expr;
 }
 
+/** Zero-extend a narrower net to `targetW` bits using a CONST 0 + merge SPLITTER so upper bits never float as Z */
+function zeroExtendNet(net: string, curW: number, targetW: number, ctx: SynthContext): string {
+  if (curW >= targetW || curW <= 0) return net;
+  const padW = targetW - curW;
+  const zeroGateId = uid('g');
+  ctx.gates.push({
+    id: zeroGateId,
+    type: 'CONST',
+    x: 0,
+    y: 0,
+    rotation: 0,
+    label: `${padW}'b0`,
+    props: { bitWidth: padW, value: '0' },
+  });
+  const zeroNet = `__zext0_${zeroGateId}`;
+  addNetDriver(ctx.netPinMap, zeroNet, { gateId: zeroGateId, pinId: 'out' });
+  ctx.netWidths.set(zeroNet, padW);
+
+  const splId = uid('zext');
+  ctx.gates.push({
+    id: splId,
+    type: 'SPLITTER',
+    x: 0,
+    y: 0,
+    rotation: 0,
+    label: 'ZEXT',
+    props: { splitMode: 'merge', splitWidths: [curW, padW], bitWidth: targetW },
+  });
+  addNetSink(ctx.netPinMap, net, { gateId: splId, pinId: 'b0' });
+  addNetSink(ctx.netPinMap, zeroNet, { gateId: splId, pinId: 'b1' });
+  const outNet = `__zext_${splId}`;
+  addNetDriver(ctx.netPinMap, outNet, { gateId: splId, pinId: 'bus' });
+  ctx.netWidths.set(outNet, targetW);
+  return outNet;
+}
+
 /** Synthesize `{cout, sum} = a + b` or `{cout, sum} = a + b + cin` directly into an ADDER gate */
 function tryBuildConcatAdderAssign(
   lhs: string,
@@ -2145,8 +2294,14 @@ function tryBuildConcatAdderAssign(
     .filter(Boolean);
   if (terms.length < 2 || terms.length > 3) return false;
 
-  const aNet = buildExprGate(terms[0], ctx, sumWidth);
-  const bNet = buildExprGate(terms[1], ctx, sumWidth);
+  const rawAW = inferExprWidth(terms[0], ctx.netWidths, sumWidth, ctx.params);
+  const rawBW = inferExprWidth(terms[1], ctx.netWidths, sumWidth, ctx.params);
+  const aBuildW = Math.min(rawAW, sumWidth);
+  const bBuildW = Math.min(rawBW, sumWidth);
+  const aRawNet = buildExprGate(terms[0], ctx, aBuildW);
+  const bRawNet = buildExprGate(terms[1], ctx, bBuildW);
+  const aNet = zeroExtendNet(aRawNet, ctx.netWidths.get(aRawNet) ?? aBuildW, sumWidth, ctx);
+  const bNet = zeroExtendNet(bRawNet, ctx.netWidths.get(bRawNet) ?? bBuildW, sumWidth, ctx);
   const cinNet = terms[2] ? buildExprGate(terms[2], ctx, 1) : null;
 
   const gid = uid('g');
@@ -2158,7 +2313,10 @@ function tryBuildConcatAdderAssign(
     y: 0,
     rotation: 0,
     label: gateType,
-    props: { bitWidth: sumWidth },
+    props:
+      gateType === 'ADDER'
+        ? { bitWidth: sumWidth, hasCarryIn: Boolean(cinNet) }
+        : { bitWidth: sumWidth },
   });
 
   addNetSink(ctx.netPinMap, aNet, { gateId: gid, pinId: 'a' });
@@ -3240,34 +3398,80 @@ export function importVerilogFilesToCircuits(
       };
     };
 
-    /** Returns true if a direct horizontal band between two pins intersects any other gate body */
+    /**
+     * Returns true ONLY when no obstacle-free orthogonal Z-route exists between two forward pins
+     * (i.e. at least one intermediate gate genuinely blocks direct routing between them).
+     */
     const hasInterveningGate = (
       fromGateId: string,
       toGateId: string,
       fromPos: { x: number; y: number },
       toPos: { x: number; y: number },
     ): boolean => {
-      const xMin = Math.min(fromPos.x, toPos.x) + GRID_SIZE;
-      const xMax = Math.max(fromPos.x, toPos.x) - GRID_SIZE;
-      if (xMax <= xMin) return false;
-      const yMin = Math.min(fromPos.y, toPos.y) - 4;
-      const yMax = Math.max(fromPos.y, toPos.y) + 4;
-      for (const b of gateBoxes) {
-        if (b.id === fromGateId || b.id === toGateId) continue;
-        if (b.x + b.width > xMin && b.x < xMax && b.y + b.height > yMin && b.y < yMax) {
-          return true;
+      const xStart = snapToGrid(fromPos.x + GRID_SIZE, GRID_SIZE);
+      const xEnd = snapToGrid(toPos.x - GRID_SIZE, GRID_SIZE);
+      if (xEnd < xStart) return false;
+      const yMin = Math.min(fromPos.y, toPos.y);
+      const yMax = Math.max(fromPos.y, toPos.y);
+      const pad = 6;
+      const others = gateBoxes.filter((b) => b.id !== fromGateId && b.id !== toGateId);
+
+      const horizBlocked = (x1: number, x2: number, y: number): boolean => {
+        const lo = Math.min(x1, x2);
+        const hi = Math.max(x1, x2);
+        for (const b of others) {
+          if (
+            b.x + b.width + pad > lo &&
+            b.x - pad < hi &&
+            b.y - pad < y &&
+            b.y + b.height + pad > y
+          ) {
+            return true;
+          }
+        }
+        return false;
+      };
+      const vertBlocked = (x: number, y1: number, y2: number): boolean => {
+        const lo = Math.min(y1, y2);
+        const hi = Math.max(y1, y2);
+        for (const b of others) {
+          if (
+            b.x - pad < x &&
+            b.x + b.width + pad > x &&
+            b.y + b.height + pad > lo &&
+            b.y - pad < hi
+          ) {
+            return true;
+          }
+        }
+        return false;
+      };
+
+      // If ANY grid-aligned vertical channel midX gives a completely obstacle-free Z-route, no detour is needed!
+      for (let midX = xStart; midX <= xEnd; midX += GRID_SIZE) {
+        if (
+          !horizBlocked(xStart, midX, fromPos.y) &&
+          !vertBlocked(midX, yMin, yMax) &&
+          !horizBlocked(midX, xEnd, toPos.y)
+        ) {
+          return false;
         }
       }
-      return false;
+      return true;
     };
 
     const tempDoc: CircuitDocument = { ...doc, wires };
     for (const [netName, entry] of netPinMap.entries()) {
       const visibleLabel = netName.startsWith('__') ? undefined : netName;
       const isGlobalNet = isGlobalDistributionNet(netName, entry, gateMap);
-      const sharedGlobalRailY = isGlobalNet
-        ? snapToGrid(layoutTopY - 60 - topRailIndex++ * GRID_SIZE, GRID_SIZE)
-        : undefined;
+      // Allocate top corridor rail lazily ONLY if at least one sink genuinely needs to detour over/around modules
+      let sharedGlobalRailY: number | undefined;
+      const ensureGlobalRailY = (): number => {
+        if (sharedGlobalRailY === undefined) {
+          sharedGlobalRailY = snapToGrid(layoutTopY - 40 - topRailIndex++ * GRID_SIZE, GRID_SIZE);
+        }
+        return sharedGlobalRailY;
+      };
 
       const validDrivers = entry.drivers
         .map((drv) => ({ ref: drv, info: getPinInfo(drv) }))
@@ -3289,36 +3493,37 @@ export function importVerilogFilesToCircuits(
         toRef: PinRef,
         toInfo: NonNullable<ReturnType<typeof getPinInfo>>,
       ) => {
-        let preferredDetourY = sharedGlobalRailY;
-        let allowSharedDetourY = Boolean(isGlobalNet);
+        const isFeedback = fromInfo.pos.x >= toInfo.pos.x - GRID_SIZE;
+        const skipsOverGate =
+          !isFeedback && hasInterveningGate(fromRef.gateId, toRef.gateId, fromInfo.pos, toInfo.pos);
 
-        if (preferredDetourY === undefined) {
-          const isFeedback = fromInfo.pos.x >= toInfo.pos.x - GRID_SIZE;
-          const skipsOverGate = hasInterveningGate(
-            fromRef.gateId,
-            toRef.gateId,
-            fromInfo.pos,
-            toInfo.pos,
-          );
-          if (isFeedback) {
-            // Right-to-left feedback loop (e.g. CPU WB->RF or ALU->PC): detour cleanly below all modules!
-            preferredDetourY = snapToGrid(
-              layoutBottomY + 60 + bottomRailIndex++ * GRID_SIZE,
-              GRID_SIZE,
-            );
-            allowSharedDetourY = false;
-          } else if (skipsOverGate) {
-            // Long forward wire jumping across intermediate modules: detour cleanly above or below!
-            const distTop =
-              Math.abs(fromInfo.pos.y - layoutTopY) + Math.abs(toInfo.pos.y - layoutTopY);
-            const distBot =
-              Math.abs(fromInfo.pos.y - layoutBottomY) + Math.abs(toInfo.pos.y - layoutBottomY);
-            preferredDetourY =
-              distTop < distBot
-                ? snapToGrid(layoutTopY - 60 - topRailIndex++ * GRID_SIZE, GRID_SIZE)
-                : snapToGrid(layoutBottomY + 60 + bottomRailIndex++ * GRID_SIZE, GRID_SIZE);
-            allowSharedDetourY = false;
+        let preferredDetourY: number | undefined;
+        let allowSharedDetourY = false;
+
+        if (isGlobalNet) {
+          // Only detour global CLK/RST wires onto the shared top rail when an intermediate module blocks direct routing!
+          if (isFeedback || skipsOverGate) {
+            preferredDetourY = ensureGlobalRailY();
+            allowSharedDetourY = true;
           }
+        } else if (isFeedback) {
+          // Right-to-left feedback loop (e.g. CPU WB->RF or ALU->PC): detour cleanly below all modules!
+          preferredDetourY = snapToGrid(
+            layoutBottomY + 60 + bottomRailIndex++ * GRID_SIZE,
+            GRID_SIZE,
+          );
+          allowSharedDetourY = false;
+        } else if (skipsOverGate) {
+          // Long forward wire jumping across intermediate modules: detour cleanly above or below!
+          const distTop =
+            Math.abs(fromInfo.pos.y - layoutTopY) + Math.abs(toInfo.pos.y - layoutTopY);
+          const distBot =
+            Math.abs(fromInfo.pos.y - layoutBottomY) + Math.abs(toInfo.pos.y - layoutBottomY);
+          preferredDetourY =
+            distTop < distBot
+              ? snapToGrid(layoutTopY - 40 - topRailIndex++ * GRID_SIZE, GRID_SIZE)
+              : snapToGrid(layoutBottomY + 60 + bottomRailIndex++ * GRID_SIZE, GRID_SIZE);
+          allowSharedDetourY = false;
         }
 
         const pts = routeWire(fromInfo.pos, toInfo.pos, {
@@ -3732,10 +3937,16 @@ export function exportVerilog(project: ProjectDocument, circuitId: string): stri
           break;
         case 'FULL_ADDER':
         case 'ADDER': {
-          const cin = getNet('cin', "1'b0");
-          chunks.push(
-            `  assign {${getOutNet('cout')}, ${getOutNet('s')}} = ${getNet('a')} + ${getNet('b')} + ${cin};`,
-          );
+          if (g.type === 'ADDER' && g.props.hasCarryIn === false) {
+            chunks.push(
+              `  assign {${getOutNet('cout')}, ${getOutNet('s')}} = ${getNet('a')} + ${getNet('b')};`,
+            );
+          } else {
+            const cin = getNet('cin', "1'b0");
+            chunks.push(
+              `  assign {${getOutNet('cout')}, ${getOutNet('s')}} = ${getNet('a')} + ${getNet('b')} + ${cin};`,
+            );
+          }
           break;
         }
         case 'MUX': {

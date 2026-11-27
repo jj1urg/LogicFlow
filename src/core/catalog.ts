@@ -799,7 +799,23 @@ export function getGatePins(gate: GateInstance, project?: ProjectDocument): PinD
       ];
 
     case 'FULL_ADDER':
+      return [
+        { id: 'a', name: 'A', dir: 'in', side: 'left', x: -hw, y: -20, bitWidth: 1 },
+        { id: 'b', name: 'B', dir: 'in', side: 'left', x: -hw, y: 0, bitWidth: 1 },
+        { id: 'cin', name: 'Cin', dir: 'in', side: 'left', x: -hw, y: 20, bitWidth: 1 },
+        { id: 's', name: 'S', dir: 'out', side: 'right', x: hw, y: -10, bitWidth: 1 },
+        { id: 'cout', name: 'Cout', dir: 'out', side: 'right', x: hw, y: 10, bitWidth: 1 },
+      ];
+
     case 'ADDER':
+      if (p.hasCarryIn === false) {
+        return [
+          { id: 'a', name: 'A', dir: 'in', side: 'left', x: -hw, y: -10, bitWidth: bw },
+          { id: 'b', name: 'B', dir: 'in', side: 'left', x: -hw, y: 10, bitWidth: bw },
+          { id: 's', name: 'S', dir: 'out', side: 'right', x: hw, y: -10, bitWidth: bw },
+          { id: 'cout', name: 'Cout', dir: 'out', side: 'right', x: hw, y: 10, bitWidth: 1 },
+        ];
+      }
       return [
         { id: 'a', name: 'A', dir: 'in', side: 'left', x: -hw, y: -20, bitWidth: bw },
         { id: 'b', name: 'B', dir: 'in', side: 'left', x: -hw, y: 0, bitWidth: bw },

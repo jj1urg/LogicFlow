@@ -104,6 +104,17 @@ export const App: React.FC = () => {
   const [dragCursor, setDragCursor] = useState<{ x: number; y: number } | null>(null);
   const [dragOverCanvas, setDragOverCanvas] = useState(false);
 
+  // Follow active tab changes in the docked HDL panel when the newly opened tab has HDL source
+  const prevActiveCircuitIdRef = useRef<string>(activeCircuit.id);
+  useEffect(() => {
+    if (prevActiveCircuitIdRef.current !== activeCircuit.id) {
+      prevActiveCircuitIdRef.current = activeCircuit.id;
+      if (hdlSourceCircuitId !== null && (activeCircuit.hdlSource || activeCircuit.hdlFileSource)) {
+        setHdlSourceCircuitId(activeCircuit.id);
+      }
+    }
+  }, [activeCircuit.id, activeCircuit.hdlSource, activeCircuit.hdlFileSource, hdlSourceCircuitId]);
+
   const handleEndDragGate = useCallback(() => {
     setDraggingGate(null);
     setDragCursor(null);

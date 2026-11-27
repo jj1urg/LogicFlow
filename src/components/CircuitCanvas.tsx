@@ -336,6 +336,21 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
     });
   }, [wiring, hoveredPin, hoveredFloatingEnd, cursorWorld, circuit, project]);
 
+  // Resize observer so canvas fills window & dock panels smoothly and redraws immediately
+  const [resizeTick, setResizeTick] = useState(0);
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const bump = () => setResizeTick((t) => t + 1);
+    const obs = new ResizeObserver(bump);
+    obs.observe(el);
+    window.addEventListener('resize', bump);
+    return () => {
+      obs.disconnect();
+      window.removeEventListener('resize', bump);
+    };
+  }, []);
+
   // Main Canvas Render Effect
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -388,17 +403,8 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
     simActive,
     runtimeInputs,
     ghostGate,
+    resizeTick,
   ]);
-
-  // Resize observer so canvas fills window smoothly
-  const [, setResizeTick] = useState(0);
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    const obs = new ResizeObserver(() => setResizeTick((t) => t + 1));
-    obs.observe(el);
-    return () => obs.disconnect();
-  }, []);
 
   const getLocalScreenPt = (clientX: number, clientY: number): Point => {
     const rect = containerRef.current!.getBoundingClientRect();

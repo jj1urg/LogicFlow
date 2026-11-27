@@ -6,6 +6,26 @@
 
 ---
 
+## 2026-11-27 — v0.14-r1.0 トグルスイッチ不定時ON表示・HDL加算器Ci/幅拡張修正・HDLタブ追従・Canvasリサイズ再描画・CLK/RST迂回最適化
+
+### 実施内容
+
+1. **トグルスイッチ（およびボタン／クロック）の物理 ON 状態と不定値 (`X`) 表示の両立** (`src/canvas/renderer.ts`):
+   - `drawToggleGate` の物理ノブ位置判定をネット解決後の値ではなくスイッチ自身の駆動値から算出するよう修正し、ON にした結果配線が伝搬不定 (`X`)・衝突 (`X`) になってもスイッチ本体が伝搬不定カラーのまま ON 位置に表示されるようにしました。
+   - `TOGGLE` / `BUTTON` / `CLOCK` 描画へ `XCause` を伝達し、伝搬不定（オレンジ）・衝突（赤）などの原因別カラーを正確に反映するよう改善。
+2. **HDL インポート時の加算器 `Cin` (`Z`) および幅不一致による伝搬不定値バグの修正** (`src/core/types.ts`, `src/core/catalog.ts`, `src/core/simulator.ts`, `src/core/hdl.ts`, `src/components/InspectorPanel.tsx`):
+   - `ADDER` に `hasCarryIn?: boolean` を追加し、インスペクタからキャリー入力 (`Cin`) の有無を切り替え可能にしました（1bit `FULL_ADDER` は従来どおり常に `Cin` 付き）。
+   - HDL インポートのキャリーなし加算 (`a + b` / `{cout, sum} = a + b`) では `hasCarryIn: false`（`Cin` ピンなし）の `ADDER`（1bit 時は `HALF_ADDER`）を合成し、未接続 `Z` の `Cin` が生えないよう修正。
+   - `logic [4:0] sum_temp = mux_out + Im;`（`docs/test_hdl/alu.sv` 等のキャリー取得 5bit 加算）では 4bit `ADDER` の `{cout, s}` を `SPLITTER (merge)` で 5bit 結合し、また幅の異なる加算・減算・比較オペランドには自動でゼロ拡張 (`zeroExtendNet`) を挿入することで、上位ビット `Z` パディングによる伝搬不定 `X` を解消。
+3. **別タブ切替時のドッキング HDL ソースパネル自動追従** (`src/App.tsx`):
+   - HDL ソースパネルを開いた状態で別の HDL ソース付き回路タブへ切り替えた際、パネルを一度閉じなくても新しいタブの HDL ソースへ自動で切り替わるよう修正。
+4. **Canvas リサイズ時の即時再描画対応** (`src/components/CircuitCanvas.tsx`):
+   - `ResizeObserver` の更新カウンタ (`resizeTick`) を描画 `useEffect` の依存配列へ追加し、あわせて `window` の `resize` イベントも監視することで、ウィンドウやドックパネルのリサイズ時にキャンバスが確実に再描画されるよう修正。
+5. **`CLK` / `RST` 信号の過剰な上部迂回配線の解消** (`src/core/hdl.ts`):
+   - `hasInterveningGate` を障害物なし直交 Z 経路の探索判定へ精密化し、さらにグローバル `CLK` / `RST` ネットでも送信元・送信先の間に中間モジュールが存在しない接続では上部レールへの強制迂回を行わず直接最短経路で配線するよう改善。
+6. **回帰テスト拡充** (`tests/hdl_advanced.test.ts`):
+   - 実 `docs/test_hdl/alu.sv` の 4bit+4bit→5bit キャリー加算＆`Cin` 非生成テスト、幅違い加算・明示 `Cin` 加算テスト、および間にモジュールがない `CLK`/`RST` の直接配線テストを追加（全 9 ファイル 74 テスト）。
+
 ## 2026-11-27 — v0.14-r0.1 公開準備・OKF 導入・開発管理ドキュメント整備
 
 ### 実施内容
@@ -60,7 +80,7 @@
 
 ### 実施内容
 
-1. **A* 自動配線の大幅高速化（Binary Min-Heap + TypedArray 化）** (`src/core/routing.ts`):
+1. _*A* 自動配線の大幅高速化（Binary Min-Heap + TypedArray 化）_* (`src/core/routing.ts`):
    - A* 探索のオープンリストを線形走査＋`Array.splice` (`O(N^2)`) から **Binary Min-Heap** (`O(N log N)`) へ刷新し、内側ループの文字列キー生成・`Map`/`Set` ルックアップを **フラットな `Uint8Array` / `Float64Array` / `Int32Array`** へ置換（配線ロジック・経路品質はそのまま維持）。
 2. **リアルタイム実行時の拡大縮小・パン・ドラッグ描画の高速化** (`src/canvas/renderer.ts`, `src/components/CircuitCanvas.tsx`, `src/store/useProjectStore.ts`):
    - 毎フレーム再計算していた `findOrthogonalCrossings` / `findWireJunctions` / サブ回路バウンディングボックスを `WeakMap` キャッシュ化（ネスト内部回路では T 字ドット探索を省略）。

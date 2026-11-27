@@ -619,7 +619,8 @@ export function simulateCompiledCircuit(
         const w = gate.type === 'FULL_ADDER' ? 1 : bw;
         const a = readPinFn(gate.id, 'a', w);
         const b = readPinFn(gate.id, 'b', w);
-        const cinRaw = readPinFn(gate.id, 'cin', 1).bits[0];
+        const hasCin = gate.type === 'FULL_ADDER' || gate.props.hasCarryIn !== false;
+        const cinRaw = hasCin ? readPinFn(gate.id, 'cin', 1).bits[0] : BIT_0;
         const cin = cinRaw === BIT_Z ? BIT_0 : cinRaw;
         const { sum, cout } = addVectors(a, b, cin, w);
         drivePinFn(gate.id, 's', sum);

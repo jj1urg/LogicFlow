@@ -306,6 +306,19 @@ const GateInspector: React.FC<{
           </div>
         )}
 
+        {gate.type === 'ADDER' && (
+          <div className="field-row">
+            <label>キャリー入力 (Cin)</label>
+            <select
+              value={p.hasCarryIn === false ? 'off' : 'on'}
+              onChange={(e) => onUpdate({}, { hasCarryIn: e.target.value === 'on' })}
+            >
+              <option value="on">あり (A + B + Cin)</option>
+              <option value="off">なし (A + B)</option>
+            </select>
+          </div>
+        )}
+
         {gate.type === 'NUM_DISPLAY' && (
           <div className="field-row">
             <label>表示基数</label>

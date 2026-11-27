@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { getGateBounds } from '../src/core/catalog';
+import { getGateBounds, getGatePins } from '../src/core/catalog';
 import {
   buildHdlModuleTree,
   exportVerilog,
@@ -856,17 +856,22 @@ endmodule`;
     const layoutTopY = Math.min(...boxes.map((b) => b.y));
     const layoutBottomY = Math.max(...boxes.map((b) => b.y + b.height));
 
-    // 3. Global CLK wires detour ABOVE all module bodies on the top corridor rail!
+    // 3. Global CLK wires detour ABOVE module bodies ONLY when intermediate modules block direct routing!
+    const uPc = top.gates.find((g) => g.label.startsWith('u_pc'))!;
+    const uDec = top.gates.find((g) => g.label.startsWith('u_dec'))!;
+    const uEx = top.gates.find((g) => g.label.startsWith('u_ex'))!;
     const clkWires = top.wires.filter((w) => w.netLabel === 'clk');
     expect(clkWires.length).toBe(3);
-    for (const cw of clkWires) {
-      const minY = Math.min(...cw.points.map((p) => p.y));
-      expect(minY).toBeLessThan(layoutTopY);
-    }
+    const clkToPc = clkWires.find((w) => w.to?.gateId === uPc.id)!;
+    const clkToDec = clkWires.find((w) => w.to?.gateId === uDec.id)!;
+    const clkToEx = clkWires.find((w) => w.to?.gateId === uEx.id)!;
+    // Direct neighbor u_pc has no intervening module -> routes directly without unnecessary top-rail detour
+    expect(Math.min(...clkToPc.points.map((p) => p.y))).toBeGreaterThanOrEqual(layoutTopY);
+    // Downstream u_dec & u_ex sit behind intermediate modules -> detour cleanly above all module bodies
+    expect(Math.min(...clkToDec.points.map((p) => p.y))).toBeLessThan(layoutTopY);
+    expect(Math.min(...clkToEx.points.map((p) => p.y))).toBeLessThan(layoutTopY);
 
     // 4. Right-to-left feedback wire `ex_fb` (u_ex -> u_pc) detours BELOW all module bodies!
-    const uPc = top.gates.find((g) => g.label.startsWith('u_pc'))!;
-    const uEx = top.gates.find((g) => g.label.startsWith('u_ex'))!;
     const fbWire = top.wires.find(
       (w) => w.netLabel === 'ex_fb' && w.from?.gateId === uEx.id && w.to?.gateId === uPc.id,
     );
@@ -1021,5 +1026,128 @@ endmodule`;
     const propOut = cStub.gates.find((g) => g.type === 'MODULE_OUT' && g.label === 'prop_x')!;
     expect(snapStub.pinXCauses?.[`${rawOut.id}:in`]).toBe('stub');
     expect(snapStub.pinXCauses?.[`${propOut.id}:in`]).toBe('unknown');
+  });
+
+  it('16. synthesizes carryless HDL adders without floating Z Cin pins (including 5-bit carry-capture alu.sv) and avoids unnecessary CLK/RST detours', () => {
+    // 1. Real-world alu.sv: `logic [4:0] sum_temp = mux_out + Im;` (4-bit + 4-bit -> 5-bit with carry)
+    const aluSrc = readFileSync(join(process.cwd(), 'docs', 'test_hdl', 'alu.sv'), 'utf-8');
+    const aluRes = importVerilogToCircuits(aluSrc);
+    const aluTop = aluRes.circuits.find((c) => c.id === aluRes.topCircuitId)!;
+    const aluAdders = aluTop.gates.filter((g) => g.type === 'ADDER');
+    expect(aluAdders.length).toBe(1);
+    expect(aluAdders[0].props.bitWidth).toBe(4);
+    expect(aluAdders[0].props.hasCarryIn).toBe(false);
+    // Carryless ADDER must NOT expose a floating Cin pin!
+    expect(getGatePins(aluAdders[0]).some((p) => p.id === 'cin')).toBe(false);
+
+    const aluProj = makeProj(aluRes.circuits, aluRes.topCircuitId);
+    const aluSeq = createEmptySequentialState();
+    // Release reset (rst_n=1), evaluate 3 + 5 = 8 (no carry)
+    evalSeq(aluProj, aluTop.id, aluSeq, {
+      clk: fromInt(0, 1),
+      rst_n: fromInt(0, 1),
+      mux_out: fromInt(3, 4),
+      Im: fromInt(5, 4),
+    });
+    const outNoCarry = evalSeq(aluProj, aluTop.id, aluSeq, {
+      clk: fromInt(1, 1),
+      rst_n: fromInt(1, 1),
+      mux_out: fromInt(3, 4),
+      Im: fromInt(5, 4),
+    });
+    expect(toUnsignedInt(outNoCarry.alu_result)).toBe(8);
+    expect(outNoCarry.carry_f.bits[0]).toBe(BIT_0);
+
+    // Evaluate 12 + 7 = 19 -> alu_result = 3, carry_f = 1 after posedge clk
+    evalSeq(aluProj, aluTop.id, aluSeq, {
+      clk: fromInt(0, 1),
+      rst_n: fromInt(1, 1),
+      mux_out: fromInt(12, 4),
+      Im: fromInt(7, 4),
+    });
+    const outCarry = evalSeq(aluProj, aluTop.id, aluSeq, {
+      clk: fromInt(1, 1),
+      rst_n: fromInt(1, 1),
+      mux_out: fromInt(12, 4),
+      Im: fromInt(7, 4),
+    });
+    expect(toUnsignedInt(outCarry.alu_result)).toBe(3);
+    expect(outCarry.carry_f.bits[0]).toBe(BIT_1);
+
+    // 2. Width-mismatched addition (`4-bit + 1-bit`) zero-extends cleanly without Z->X propagation
+    const mixedAddRes = importVerilogToCircuits(`
+      module add_mixed (
+        input  logic [3:0] a,
+        input  logic       inc,
+        output logic [3:0] y
+      );
+        assign y = a + inc;
+      endmodule
+    `);
+    const mixedTop = mixedAddRes.circuits.find((c) => c.id === mixedAddRes.topCircuitId)!;
+    const mixedAdder = mixedTop.gates.find((g) => g.type === 'ADDER')!;
+    expect(mixedAdder.props.hasCarryIn).toBe(false);
+    expect(getGatePins(mixedAdder).some((p) => p.id === 'cin')).toBe(false);
+    const mixedProj = makeProj(mixedAddRes.circuits, mixedTop.id);
+    const mixedOut = evalSeq(mixedProj, mixedTop.id, createEmptySequentialState(), {
+      a: fromInt(6, 4),
+      inc: fromInt(1, 1),
+    });
+    expect(toUnsignedInt(mixedOut.y)).toBe(7);
+
+    // 3. Explicit 3-term carry-in addition `{cout, s} = a + b + cin` retains Cin pin and computes accurately
+    const withCinRes = importVerilogToCircuits(`
+      module add_with_cin (
+        input  logic [3:0] a,
+        input  logic [3:0] b,
+        input  logic       cin,
+        output logic [3:0] s,
+        output logic       cout
+      );
+        assign {cout, s} = a + b + cin;
+      endmodule
+    `);
+    const cinTop = withCinRes.circuits.find((c) => c.id === withCinRes.topCircuitId)!;
+    const cinAdder = cinTop.gates.find((g) => g.type === 'ADDER')!;
+    expect(cinAdder.props.hasCarryIn).toBe(true);
+    expect(getGatePins(cinAdder).some((p) => p.id === 'cin')).toBe(true);
+    const cinProj = makeProj(withCinRes.circuits, cinTop.id);
+    const cinOut = evalSeq(cinProj, cinTop.id, createEmptySequentialState(), {
+      a: fromInt(15, 4),
+      b: fromInt(0, 4),
+      cin: fromInt(1, 1),
+    });
+    expect(toUnsignedInt(cinOut.s)).toBe(0);
+    expect(cinOut.cout.bits[0]).toBe(BIT_1);
+
+    // 4. CLK & RST feeding parallel adjacent registers with NO intervening modules must NOT detour above layoutTopY!
+    const directClkRes = importVerilogToCircuits(`
+      module dual_regs (
+        input  logic       clk,
+        input  logic       rst_n,
+        input  logic [3:0] d0,
+        input  logic [3:0] d1,
+        output logic [3:0] q0,
+        output logic [3:0] q1
+      );
+        always_ff @(posedge clk or negedge rst_n) begin
+          if (!rst_n) q0 <= 4'd0;
+          else q0 <= d0;
+        end
+        always_ff @(posedge clk or negedge rst_n) begin
+          if (!rst_n) q1 <= 4'd0;
+          else q1 <= d1;
+        end
+      endmodule
+    `);
+    const directTop = directClkRes.circuits.find((c) => c.id === directClkRes.topCircuitId)!;
+    const directProj = makeProj(directClkRes.circuits, directTop.id);
+    const directBoxes = directTop.gates.map((g) => getGateBounds(g, directProj));
+    const directTopY = Math.min(...directBoxes.map((b) => b.y));
+    const clkDirectWires = directTop.wires.filter((w) => w.netLabel === 'clk');
+    expect(clkDirectWires.length).toBe(2);
+    for (const cw of clkDirectWires) {
+      expect(Math.min(...cw.points.map((p) => p.y))).toBeGreaterThanOrEqual(directTopY);
+    }
   });
 });
