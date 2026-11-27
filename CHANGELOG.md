@@ -6,6 +6,18 @@
 
 ---
 
+## 2026-11-27 — v0.14-r2.0 D_FF/REGISTER の EN ピン有効/無効切替対応 & 公開 URL 明記
+
+### 実施内容
+
+1. **`D_FF` / `REGISTER` のイネーブル入力 (`EN`) 有効・無効設定の追加** (`src/core/types.ts`, `src/core/catalog.ts`, `src/core/simulator.ts`, `src/core/hdl.ts`, `src/components/InspectorPanel.tsx`):
+   - `GateProps` に `hasEnable?: boolean` を追加し、`D_FF` および `REGISTER` で `EN` ピンの有無をインスペクタから切り替え可能にしました（`hasEnable: false` の場合は `EN` ピン自体を非表示にし、常にクロック立ち上がりで更新）。
+   - HDL の `always_ff` 合成時に、イネーブル条件 (`if (en)`) が存在しない場合は `hasEnable: false` で生成するよう修正し、未接続ハイインピーダンス (`Z`) の `EN` ピンが発生しないようにしました。
+2. **ライブ公開 URL のドキュメント明記** (`README.md`, `docs/architecture.md`, `docs/features.md`):
+   - Cloudflare Workers により `main` ブランチの内容が `https://logicflow.arrow-xt.com` へデプロイ・公開されている旨を `README.md` と `docs/architecture.md` に追記。
+3. **テスト拡充** (`tests/hdl_advanced.test.ts`):
+   - 実 `docs/test_hdl/alu.sv` / `pc_4bit.sv`（`EN` なし）および `register_4bit.sv`（`if (we)` 付き `EN` あり）を用いた `hasEnable` ピン生成・クロック更新の回帰テストを追加（全 9 ファイル 75 テスト）。
+
 ## 2026-11-27 — v0.14-r1.0 トグルスイッチ不定時ON表示・HDL加算器Ci/幅拡張修正・HDLタブ追従・Canvasリサイズ再描画・CLK/RST迂回最適化
 
 ### 実施内容

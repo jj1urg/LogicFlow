@@ -693,7 +693,8 @@ export function simulateCompiledCircuit(
         } else if (rising && recordSideEffects) {
           pendingClockEdges.set(gate.id, true);
           if (gate.type === 'D_FF' || gate.type === 'REGISTER') {
-            const enRaw = readPinFn(gate.id, 'en', 1).bits[0];
+            const hasEn = gate.props.hasEnable !== false;
+            const enRaw = hasEn ? readPinFn(gate.id, 'en', 1).bits[0] : BIT_1;
             const en = enRaw === BIT_Z ? BIT_1 : enRaw;
             if (en === BIT_1) {
               const d = readPinFn(gate.id, 'd', bw);

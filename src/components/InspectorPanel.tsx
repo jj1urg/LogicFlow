@@ -319,6 +319,19 @@ const GateInspector: React.FC<{
           </div>
         )}
 
+        {(gate.type === 'D_FF' || gate.type === 'REGISTER') && (
+          <div className="field-row">
+            <label>イネーブル入力 (EN)</label>
+            <select
+              value={p.hasEnable === false ? 'off' : 'on'}
+              onChange={(e) => onUpdate({}, { hasEnable: e.target.value === 'on' })}
+            >
+              <option value="on">あり (EN 有効時のみ更新)</option>
+              <option value="off">なし (常にクロックで更新)</option>
+            </select>
+          </div>
+        )}
+
         {gate.type === 'NUM_DISPLAY' && (
           <div className="field-row">
             <label>表示基数</label>

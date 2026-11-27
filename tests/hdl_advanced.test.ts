@@ -1150,4 +1150,99 @@ endmodule`;
       expect(Math.min(...cw.points.map((p) => p.y))).toBeGreaterThanOrEqual(directTopY);
     }
   });
+
+  it('17. omits floating EN pins on HDL-synthesized D_FF/REGISTER without enable condition and keeps EN when guarded by if(en)', () => {
+    // 1. alu.sv: D_FF (`carry_f`) has no enable condition -> hasEnable=false, no `en` pin
+    const aluSrc = readFileSync(join(process.cwd(), 'docs', 'test_hdl', 'alu.sv'), 'utf-8');
+    const aluRes = importVerilogToCircuits(aluSrc);
+    const aluTop = aluRes.circuits.find((c) => c.id === aluRes.topCircuitId)!;
+    const dff = aluTop.gates.find((g) => g.type === 'D_FF')!;
+    expect(dff).toBeDefined();
+    expect(dff.props.hasEnable).toBe(false);
+    expect(getGatePins(dff).some((p) => p.id === 'en')).toBe(false);
+
+    // 2. pc_4bit.sv: REGISTER (`pc_out`) uses `if (pc_we) ... else ...` (always updates on clk) -> hasEnable=false, no `en` pin
+    const pcSrc = readFileSync(join(process.cwd(), 'docs', 'test_hdl', 'pc_4bit.sv'), 'utf-8');
+    const pcRes = importVerilogToCircuits(pcSrc);
+    const pcTop = pcRes.circuits.find((c) => c.id === pcRes.topCircuitId)!;
+    const pcReg = pcTop.gates.find((g) => g.type === 'REGISTER')!;
+    expect(pcReg).toBeDefined();
+    expect(pcReg.props.hasEnable).toBe(false);
+    expect(getGatePins(pcReg).some((p) => p.id === 'en')).toBe(false);
+
+    const pcProj = makeProj(pcRes.circuits, pcTop.id);
+    const pcSeq = createEmptySequentialState();
+    // Reset to 0
+    evalSeq(pcProj, pcTop.id, pcSeq, {
+      clk: fromInt(0, 1),
+      rst_n: fromInt(0, 1),
+      pc_we: fromInt(0, 1),
+      Im: fromInt(0, 4),
+    });
+    // Rising clock edge with rst_n=1, pc_we=0 -> increments 0 -> 1
+    const pc1 = evalSeq(pcProj, pcTop.id, pcSeq, {
+      clk: fromInt(1, 1),
+      rst_n: fromInt(1, 1),
+      pc_we: fromInt(0, 1),
+      Im: fromInt(0, 4),
+    });
+    expect(toUnsignedInt(pc1.pc_out)).toBe(1);
+    // Second rising edge with pc_we=1, Im=9 -> jumps to 9
+    evalSeq(pcProj, pcTop.id, pcSeq, {
+      clk: fromInt(0, 1),
+      rst_n: fromInt(1, 1),
+      pc_we: fromInt(1, 1),
+      Im: fromInt(9, 4),
+    });
+    const pc2 = evalSeq(pcProj, pcTop.id, pcSeq, {
+      clk: fromInt(1, 1),
+      rst_n: fromInt(1, 1),
+      pc_we: fromInt(1, 1),
+      Im: fromInt(9, 4),
+    });
+    expect(toUnsignedInt(pc2.pc_out)).toBe(9);
+
+    // 3. register_4bit.sv: REGISTER (`data_out`) has `if (we)` -> hasEnable=true, exposes `en` pin and honors we=0/1
+    const regSrc = readFileSync(
+      join(process.cwd(), 'docs', 'test_hdl', 'register_4bit.sv'),
+      'utf-8',
+    );
+    const regRes = importVerilogToCircuits(regSrc);
+    const regTop = regRes.circuits.find((c) => c.id === regRes.topCircuitId)!;
+    const regGate = regTop.gates.find((g) => g.type === 'REGISTER')!;
+    expect(regGate).toBeDefined();
+    expect(regGate.props.hasEnable).toBe(true);
+    expect(getGatePins(regGate).some((p) => p.id === 'en')).toBe(true);
+
+    const regProj = makeProj(regRes.circuits, regTop.id);
+    const regSeq = createEmptySequentialState();
+    evalSeq(regProj, regTop.id, regSeq, {
+      clk: fromInt(0, 1),
+      rst_n: fromInt(0, 1),
+      we: fromInt(0, 1),
+      data_in: fromInt(0xa, 4),
+    });
+    // Rising edge with we=0 -> must hold 0
+    const held = evalSeq(regProj, regTop.id, regSeq, {
+      clk: fromInt(1, 1),
+      rst_n: fromInt(1, 1),
+      we: fromInt(0, 1),
+      data_in: fromInt(0xa, 4),
+    });
+    expect(toUnsignedInt(held.data_out)).toBe(0);
+    // Rising edge with we=1 -> latches 0xA
+    evalSeq(regProj, regTop.id, regSeq, {
+      clk: fromInt(0, 1),
+      rst_n: fromInt(1, 1),
+      we: fromInt(1, 1),
+      data_in: fromInt(0xa, 4),
+    });
+    const loaded = evalSeq(regProj, regTop.id, regSeq, {
+      clk: fromInt(1, 1),
+      rst_n: fromInt(1, 1),
+      we: fromInt(1, 1),
+      data_in: fromInt(0xa, 4),
+    });
+    expect(toUnsignedInt(loaded.data_out)).toBe(0xa);
+  });
 });

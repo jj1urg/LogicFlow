@@ -3203,7 +3203,7 @@ export function importVerilogFilesToCircuits(
         y: 0,
         rotation: 0,
         label: ff.target,
-        props: { bitWidth: bw },
+        props: { bitWidth: bw, hasEnable: Boolean(ff.enExpr) },
       });
 
       // Output Q drives target net

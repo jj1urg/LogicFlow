@@ -128,6 +128,8 @@ export interface GateProps {
   clockHigh?: boolean;
   /** Whether multi-bit ADDER exposes a Carry-In (Cin) pin (defaults to true when omitted for backward compatibility) */
   hasCarryIn?: boolean;
+  /** Whether D_FF / REGISTER exposes an Enable (EN) pin (defaults to true when omitted for backward compatibility) */
+  hasEnable?: boolean;
 }
 
 export interface GateInstance {

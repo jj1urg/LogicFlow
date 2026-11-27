@@ -850,6 +850,15 @@ export function getGatePins(gate: GateInstance, project?: ProjectDocument): PinD
       ];
 
     case 'D_FF':
+      if (p.hasEnable === false) {
+        return [
+          { id: 'd', name: 'D', dir: 'in', side: 'left', x: -hw, y: -10, bitWidth: bw },
+          { id: 'clk', name: 'CLK', dir: 'in', side: 'left', x: -hw, y: 10, bitWidth: 1 },
+          { id: 'rst', name: 'RST', dir: 'in', side: 'bottom', x: 0, y: hh, bitWidth: 1 },
+          { id: 'q', name: 'Q', dir: 'out', side: 'right', x: hw, y: -10, bitWidth: bw },
+          { id: 'qn', name: 'Q̄', dir: 'out', side: 'right', x: hw, y: 10, bitWidth: bw },
+        ];
+      }
       return [
         { id: 'd', name: 'D', dir: 'in', side: 'left', x: -hw, y: -20, bitWidth: bw },
         { id: 'clk', name: 'CLK', dir: 'in', side: 'left', x: -hw, y: 0, bitWidth: 1 },
@@ -879,6 +888,14 @@ export function getGatePins(gate: GateInstance, project?: ProjectDocument): PinD
       ];
 
     case 'REGISTER':
+      if (p.hasEnable === false) {
+        return [
+          { id: 'd', name: 'D', dir: 'in', side: 'left', x: -hw, y: -10, bitWidth: bw },
+          { id: 'clk', name: 'CLK', dir: 'in', side: 'left', x: -hw, y: 10, bitWidth: 1 },
+          { id: 'clr', name: 'CLR', dir: 'in', side: 'bottom', x: 0, y: hh, bitWidth: 1 },
+          { id: 'q', name: 'Q', dir: 'out', side: 'right', x: hw, y: 0, bitWidth: bw },
+        ];
+      }
       return [
         { id: 'd', name: 'D', dir: 'in', side: 'left', x: -hw, y: -20, bitWidth: bw },
         { id: 'clk', name: 'CLK', dir: 'in', side: 'left', x: -hw, y: 0, bitWidth: 1 },

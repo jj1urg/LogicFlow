@@ -2,6 +2,8 @@
 
 **Verilog / SystemVerilog インポート対応・リアルタイム 4 値論理回路シミュレータ**
 
+- **ライブデモ (Web App)**: https://logicflow.arrow-xt.com （Cloudflare Workers により `main` ブランチの内容をそのまま公開中）
+
 LogicFlow は、ブラウザ上で直感的に論理ゲートや階層モジュールを配置・配線し、`0` / `1` / `X` / `Z` の 4 値信号をリアルタイムに可視化しながらシミュレーションできる Web ベースの論理回路シミュレータです。
 
 <!-- スクリーンショットを docs/assets/screenshot.png に配置したら以下のコメントを解除してください -->
@@ -120,6 +122,8 @@ npm run build
 ```
 
 ### Cloudflare Workers へのデプロイ
+
+本番環境（https://logicflow.arrow-xt.com）は Cloudflare Workers と連携しており、`main` ブランチの内容がそのままデプロイされます。手動デプロイを行う場合は以下を実行します：
 
 ```bash
 npm run build
