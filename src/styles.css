@@ -1989,3 +1989,450 @@ body,
 .hdl-tok-sys {
   color: #fb7185;
 }
+
+/* --- Workspace Canvas Column Wrapper (allows Watch Dock below Canvas alongside right HDL Dock) --- */
+.workspace-canvas-col {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.mini-btn.active-watch {
+  background: rgba(34, 197, 94, 0.16);
+  border-color: rgba(34, 197, 94, 0.55);
+  color: #86efac;
+}
+
+.watch-count-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: rgba(34, 197, 94, 0.28);
+  color: #dcfce7;
+  font-size: 10px;
+  font-weight: 700;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* --- Live Subcircuit Floating Popup Window (Non-Blocking Parent-Driven Inspector) --- */
+.live-popup-window {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel);
+  border: 1px solid rgba(56, 189, 248, 0.55);
+  border-radius: 10px;
+  box-shadow:
+    0 20px 50px rgba(0, 0, 0, 0.72),
+    0 0 0 1px rgba(15, 23, 42, 0.9);
+  overflow: hidden;
+}
+
+.live-popup-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-strong);
+  cursor: move;
+  user-select: none;
+}
+
+.live-popup-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+}
+
+.live-popup-grip {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.live-popup-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.live-popup-badge.is-live {
+  color: #bbf7d0;
+  background: rgba(34, 197, 94, 0.2);
+  border: 1px solid rgba(34, 197, 94, 0.55);
+}
+
+.live-popup-badge.is-paused {
+  color: #fde68a;
+  background: rgba(245, 158, 11, 0.16);
+  border: 1px solid rgba(245, 158, 11, 0.5);
+}
+
+.live-popup-crumbs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  overflow-x: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+}
+
+.live-crumb-root {
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.live-crumb-sep {
+  color: #475569;
+  flex-shrink: 0;
+}
+
+.live-crumb-btn {
+  border: none;
+  background: transparent;
+  color: #cbd5e1;
+  font-family: inherit;
+  font-size: inherit;
+  padding: 1px 5px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.live-crumb-btn:hover {
+  background: rgba(56, 189, 248, 0.16);
+  color: #e0f2fe;
+}
+
+.live-crumb-btn.active {
+  color: #38bdf8;
+  font-weight: 700;
+}
+
+.live-crumb-mod {
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+.live-popup-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.live-popup-zoom {
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text-muted);
+  min-width: 36px;
+  text-align: center;
+}
+
+.live-popup-canvas-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  background: #0b1120;
+  overflow: hidden;
+}
+
+.live-popup-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  cursor: grab;
+}
+
+.live-popup-canvas:active {
+  cursor: grabbing;
+}
+
+.live-popup-hint {
+  position: absolute;
+  left: 10px;
+  bottom: 8px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.84);
+  border: 1px solid rgba(51, 65, 85, 0.65);
+  color: var(--text-muted);
+  font-size: 10.5px;
+  pointer-events: none;
+}
+
+.live-popup-empty {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 12.5px;
+}
+
+.live-popup-ports {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 10px;
+  max-height: 68px;
+  overflow-y: auto;
+  background: var(--bg-surface);
+  border-top: 1px solid var(--border-strong);
+}
+
+.live-port-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 7px;
+  border-radius: 5px;
+  background: var(--bg-root);
+  border: 1px solid var(--border);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+
+.live-port-dir {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 0 4px;
+  border-radius: 3px;
+}
+
+.live-port-dir.in {
+  background: rgba(56, 189, 248, 0.18);
+  color: #7dd3fc;
+}
+
+.live-port-dir.out {
+  background: rgba(34, 197, 94, 0.18);
+  color: #86efac;
+}
+
+.live-port-name {
+  color: var(--text-main);
+}
+
+.live-port-val {
+  font-weight: 700;
+}
+
+.live-popup-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+  background: linear-gradient(
+    135deg,
+    transparent 45%,
+    rgba(148, 163, 184, 0.5) 50%,
+    transparent 55%,
+    transparent 70%,
+    rgba(148, 163, 184, 0.65) 75%,
+    transparent 80%
+  );
+}
+
+/* --- Signal Watch & Step-Based Waveform Dock Panel --- */
+.watch-dock-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  width: 100%;
+  background: var(--bg-panel);
+  border-top: 1px solid var(--border-strong);
+  z-index: 9;
+}
+
+.watch-dock-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 5px 10px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-strong);
+}
+
+.watch-title-group {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.watch-dock-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.watch-cursor-badge {
+  font-size: 10.5px;
+  font-weight: 700;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #bae6fd;
+  background: rgba(56, 189, 248, 0.18);
+  border: 1px solid rgba(56, 189, 248, 0.5);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+
+.watch-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.watch-select {
+  background: var(--bg-root);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  color: var(--text-main);
+  font-size: 11px;
+  padding: 3px 6px;
+  max-width: 165px;
+}
+
+.watch-select.compact {
+  max-width: 96px;
+}
+
+.watch-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 14px 20px;
+  color: var(--text-muted);
+  font-size: 12px;
+  background: #070b14;
+  text-align: center;
+}
+
+.watch-body-split {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+  background: #070b14;
+}
+
+.watch-list-col {
+  width: 265px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--border-strong);
+  background: var(--bg-panel);
+  overflow-y: auto;
+}
+
+.watch-list-head {
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 10px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-muted);
+  background: #0f172a;
+  border-bottom: 1px solid rgba(51, 65, 85, 0.7);
+  flex-shrink: 0;
+}
+
+.watch-list-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.watch-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 6px 0 9px;
+  border-bottom: 1px solid rgba(51, 65, 85, 0.35);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  box-sizing: border-box;
+}
+
+.watch-row:nth-child(even) {
+  background: rgba(30, 41, 59, 0.25);
+}
+
+.watch-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.watch-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-main);
+}
+
+.watch-width {
+  font-size: 9.5px;
+  color: var(--text-muted);
+  background: rgba(148, 163, 184, 0.14);
+  padding: 0 4px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.watch-val {
+  font-weight: 700;
+  min-width: 44px;
+  text-align: right;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.watch-val:hover {
+  text-decoration: underline;
+}
+
+.watch-row-acts {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  flex-shrink: 0;
+}
+
+.watch-wave-col {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  background: #070b14;
+}

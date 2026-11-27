@@ -18,6 +18,7 @@ generated:
 
 | ファイル                             | `type`          | 概要                                                                                   |
 | ------------------------------------ | --------------- | -------------------------------------------------------------------------------------- |
+| [scope.md](./scope.md)               | `policy`        | プロジェクトのコア価値（やること）と明示的な非ゴール（やらないこと）の規定             |
 | [architecture.md](./architecture.md) | `architecture`  | 技術選定、ディレクトリ構成、4 値シミュレータ、A* ルータ、デプロイ構成                  |
 | [features.md](./features.md)         | `specification` | 基本操作、4 値信号色定義、実行モード、搭載コンポーネント一覧、HDL 連携、ショートカット |
 | [versioning.md](./versioning.md)     | `policy`        | 独自バージョニング `vx.y-rz.w`、SemVer/`package.json` 整合、Jujutsu (`jj`) 運用ルール  |

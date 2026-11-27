@@ -82,6 +82,7 @@ interface CircuitCanvasProps {
   onInteractGate: (gate: GateInstance) => void;
   onButtonPress: (gateId: string, pressed: boolean) => void;
   onOpenSubcircuit: (circuitId: string) => void;
+  onOpenLiveSubcircuitPopup: (gateId: string) => void;
   onQuickEditWireLabel: (wire: Wire) => void;
   onOpenContextMenu: (menu: ContextMenuState) => void;
   onChangeInputMode: (mode: InputMode) => void;
@@ -119,6 +120,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
   onInteractGate,
   onButtonPress,
   onOpenSubcircuit,
+  onOpenLiveSubcircuitPopup,
   onQuickEditWireLabel,
   onOpenContextMenu,
   onChangeInputMode,
@@ -898,7 +900,12 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
 
     const gateHit = hitTestGate(worldPt, circuit, project);
     if (gateHit?.type === 'SUBCIRCUIT' && gateHit.props.subcircuitId) {
-      onOpenSubcircuit(gateHit.props.subcircuitId);
+      const subDoc = project.circuits[gateHit.props.subcircuitId];
+      if (e.shiftKey && subDoc && !subDoc.isStub) {
+        onOpenLiveSubcircuitPopup(gateHit.id);
+      } else {
+        onOpenSubcircuit(gateHit.props.subcircuitId);
+      }
       return;
     }
     const wireHit = hitTestWire(worldPt, circuit, 8 / vp.zoom);

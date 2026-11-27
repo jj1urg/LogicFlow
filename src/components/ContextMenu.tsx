@@ -1,5 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import {
+  Activity,
   AlignCenter,
   Copy,
   CopyPlus,
@@ -17,6 +18,7 @@ import {
   Tag,
   Trash2,
   Unlink,
+  ZoomIn,
 } from 'lucide-react';
 import { GATE_CATALOG, getCompatibleReplacementTypes } from '../core/catalog';
 import {
@@ -44,8 +46,13 @@ interface ContextMenuProps {
   activeCircuitId: string;
   circuitHasHdlSource: boolean;
   targetSubHasHdlSource: boolean;
+  targetSubIsStub: boolean;
+  isWireWatched: boolean;
+  isGateWatched: boolean;
   onClose: () => void;
   onSetWireNetLabel: (wire: Wire) => void;
+  onToggleWatchWire: (wire: Wire) => void;
+  onToggleWatchGate: (gate: GateInstance) => void;
   onToggleWireRouteMode: (wire: Wire) => void;
   onRerouteWire: (wireId: string) => void;
   onSetGateLabel: (gate: GateInstance) => void;
@@ -58,6 +65,7 @@ interface ContextMenuProps {
   onDelete: () => void;
   onSetSubcircuitMode: (gateId: string, mode: SubcircuitDisplayMode) => void;
   onOpenSubcircuit: (circuitId: string) => void;
+  onOpenLiveSubcircuitPopup: (gateId: string) => void;
   onOpenHdlSource: (circuitId: string) => void;
   onOpenMemoryEditor: (gateId: string) => void;
   onAddTunnelAt: (pt: Point) => void;
@@ -75,8 +83,13 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
   activeCircuitId,
   circuitHasHdlSource,
   targetSubHasHdlSource,
+  targetSubIsStub,
+  isWireWatched,
+  isGateWatched,
   onClose,
   onSetWireNetLabel,
+  onToggleWatchWire,
+  onToggleWatchGate,
   onToggleWireRouteMode,
   onRerouteWire,
   onSetGateLabel,
@@ -89,6 +102,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
   onDelete,
   onSetSubcircuitMode,
   onOpenSubcircuit,
+  onOpenLiveSubcircuitPopup,
   onOpenHdlSource,
   onOpenMemoryEditor,
   onAddTunnelAt,
@@ -127,13 +141,33 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
       {editLocked ? (
         <>
           <div className="ctx-header">実行モード（編集ロック中）</div>
+          {menu.wire && (
+            <button className="ctx-item" onClick={() => run(() => onToggleWatchWire(menu.wire!))}>
+              <Activity size={14} />
+              <span>{isWireWatched ? '信号ウォッチから解除' : 'このワイヤーをウォッチに追加'}</span>
+            </button>
+          )}
+          {menu.gate && !menu.wire && (
+            <button className="ctx-item" onClick={() => run(() => onToggleWatchGate(menu.gate!))}>
+              <Activity size={14} />
+              <span>{isGateWatched ? '信号ウォッチから解除' : 'この信号をウォッチに追加'}</span>
+            </button>
+          )}
           {menu.gate?.type === 'SUBCIRCUIT' && menu.gate.props.subcircuitId && (
             <>
+              {!targetSubIsStub && (
+                <button
+                  className="ctx-item"
+                  onClick={() => run(() => onOpenLiveSubcircuitPopup(menu.gate!.id))}
+                >
+                  <ZoomIn size={14} /> <span>ライブ内部を拡大表示（親の信号反映）</span>
+                </button>
+              )}
               <button
                 className="ctx-item"
                 onClick={() => run(() => onOpenSubcircuit(menu.gate!.props.subcircuitId!))}
               >
-                <ExternalLink size={14} /> <span>内部回路タブを開く</span>
+                <ExternalLink size={14} /> <span>内部回路タブを開く（独立編集）</span>
               </button>
               {targetSubHasHdlSource && (
                 <button
@@ -162,6 +196,10 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
           {menu.wire && (
             <>
               <div className="ctx-header">ワイヤー設定</div>
+              <button className="ctx-item" onClick={() => run(() => onToggleWatchWire(menu.wire!))}>
+                <Activity size={14} />
+                <span>{isWireWatched ? '信号ウォッチから解除' : '信号ウォッチに追加'}</span>
+              </button>
               <button className="ctx-item" onClick={() => run(() => onSetWireNetLabel(menu.wire!))}>
                 <Tag size={14} /> <span>ネットラベルを設定 / 編集</span> <kbd>L</kbd>
               </button>
@@ -189,6 +227,10 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
           {menu.gate && !menu.wire && (
             <>
               <div className="ctx-header">{menu.gate.label || menu.gate.type}</div>
+              <button className="ctx-item" onClick={() => run(() => onToggleWatchGate(menu.gate!))}>
+                <Activity size={14} />
+                <span>{isGateWatched ? '信号ウォッチから解除' : 'この信号をウォッチに追加'}</span>
+              </button>
               <button className="ctx-item" onClick={() => run(() => onSetGateLabel(menu.gate!))}>
                 <Tag size={14} /> <span>ラベル名を変更</span>
               </button>
@@ -206,6 +248,14 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
                 <>
                   <div className="ctx-sep" />
                   <div className="ctx-header">モジュール表示モード</div>
+                  {menu.gate.props.subcircuitId && !targetSubIsStub && (
+                    <button
+                      className="ctx-item"
+                      onClick={() => run(() => onOpenLiveSubcircuitPopup(menu.gate!.id))}
+                    >
+                      <ZoomIn size={14} /> <span>ライブ内部を拡大表示（親の信号反映）</span>
+                    </button>
+                  )}
                   <button
                     className="ctx-item"
                     onClick={() => run(() => onSetSubcircuitMode(menu.gate!.id, 'live'))}
@@ -230,7 +280,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
                         className="ctx-item"
                         onClick={() => run(() => onOpenSubcircuit(menu.gate!.props.subcircuitId!))}
                       >
-                        <ExternalLink size={14} /> <span>内部回路タブを開く</span>
+                        <ExternalLink size={14} /> <span>内部回路タブを開く（独立編集）</span>
                       </button>
                       {targetSubHasHdlSource && (
                         <button

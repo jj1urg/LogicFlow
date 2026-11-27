@@ -7,7 +7,8 @@
 ## 1. ナレッジ参照（Open Knowledge Format）
 
 - 本リポジトリのドキュメントは `docs/` ディレクトリを **Open Knowledge Format (OKF)** の Knowledge Bundle として構造化しています。
-- 仕様や設計を確認する際は、まず [`docs/index.md`](./docs/index.md) を読み込み、必要なコンセプトドキュメント（[`docs/architecture.md`](./docs/architecture.md), [`docs/features.md`](./docs/features.md), [`docs/versioning.md`](./docs/versioning.md) 等）へ辿ってください。
+- 仕様や設計を確認する際は、まず [`docs/index.md`](./docs/index.md) を読み込み、必要なコンセプトドキュメント（[`docs/scope.md`](./docs/scope.md), [`docs/architecture.md`](./docs/architecture.md), [`docs/features.md`](./docs/features.md), [`docs/versioning.md`](./docs/versioning.md) 等）へ辿ってください。
+- 機能追加や提案を行う際は、[`docs/scope.md`](./docs/scope.md) に定義された **非ゴール（やらないこと）** を尊重し、過剰な複雑化を避けてください。
 - `docs/` 配下に新しいドキュメントを追加する場合は、OKF に従い YAML フロントマター（最低限 `type`、推奨として `title`, `description`, `tags`, `generated`）を付与し、`docs/index.md` へ登録してください。
 
 ---

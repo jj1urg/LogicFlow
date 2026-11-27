@@ -6,6 +6,7 @@ import { ComponentPalette, DragGatePayload } from './components/ComponentPalette
 import { ContextMenu, ContextMenuState } from './components/ContextMenu';
 import { HdlDockPanel, HdlDockPosition } from './components/HdlDockPanel';
 import { InspectorPanel } from './components/InspectorPanel';
+import { LiveSubcircuitPopup } from './components/LiveSubcircuitPopup';
 import {
   MemoryEditorModal,
   NetlistExportModal,
@@ -14,7 +15,20 @@ import {
   VerilogImportModal,
 } from './components/Modals';
 import { TopBar } from './components/TopBar';
+import { WatchWaveformPanel } from './components/WatchWaveformPanel';
 import { GATE_CATALOG } from './core/catalog';
+import {
+  appendWaveformStep,
+  buildPinWatchLabel,
+  buildWireWatchLabel,
+  getDefaultWatchPin,
+  hasWatchedSignalsChanged,
+  makePinWatchId,
+  makeWireWatchId,
+  sampleWatchedSignals,
+  WatchTarget,
+  WaveformStep,
+} from './core/debug';
 import { GateInstance, GateType, Point, ProjectDocument, Wire } from './core/types';
 import { useProjectStore } from './store/useProjectStore';
 
@@ -99,21 +113,179 @@ export const App: React.FC = () => {
   const [showShortcutsModal, setShowShortcutsModal] = useState(false);
   const [hdlSourceCircuitId, setHdlSourceCircuitId] = useState<string | null>(null);
   const [hdlDockPos, setHdlDockPos] = useState<HdlDockPosition>('bottom');
+  const [livePopupPath, setLivePopupPath] = useState<string[] | null>(null);
+  const [showWatchPanel, setShowWatchPanel] = useState(false);
+  const [watchTargets, setWatchTargets] = useState<WatchTarget[]>([]);
+  const [waveHistoryByCircuit, setWaveHistoryByCircuit] = useState<Record<string, WaveformStep[]>>(
+    {},
+  );
+  const [watchRecording, setWatchRecording] = useState(true);
   const [memoryGateId, setMemoryGateId] = useState<string | null>(null);
   const [draggingGate, setDraggingGate] = useState<DragGatePayload | null>(null);
   const [dragCursor, setDragCursor] = useState<{ x: number; y: number } | null>(null);
   const [dragOverCanvas, setDragOverCanvas] = useState(false);
 
-  // Follow active tab changes in the docked HDL panel when the newly opened tab has HDL source
+  // Follow active tab changes in the docked HDL panel and close stale live popup on tab switch
   const prevActiveCircuitIdRef = useRef<string>(activeCircuit.id);
   useEffect(() => {
     if (prevActiveCircuitIdRef.current !== activeCircuit.id) {
       prevActiveCircuitIdRef.current = activeCircuit.id;
+      setLivePopupPath(null);
       if (hdlSourceCircuitId !== null && (activeCircuit.hdlSource || activeCircuit.hdlFileSource)) {
         setHdlSourceCircuitId(activeCircuit.id);
       }
     }
   }, [activeCircuit.id, activeCircuit.hdlSource, activeCircuit.hdlFileSource, hdlSourceCircuitId]);
+
+  const activeWatchTargets = watchTargets.filter((t) => t.circuitId === activeCircuit.id);
+  const activeWaveHistory = waveHistoryByCircuit[activeCircuit.id] ?? [];
+
+  // Auto-record waveform step whenever any watched signal on the active circuit changes
+  useEffect(() => {
+    if (!simActive || !watchRecording || !snapshot) return;
+    if (activeWatchTargets.length === 0) return;
+    const sampled = sampleWatchedSignals(watchTargets, activeCircuit, project, snapshot);
+    setWaveHistoryByCircuit((prev) => {
+      const curList = prev[activeCircuit.id] ?? [];
+      const lastStep = curList[curList.length - 1];
+      if (!hasWatchedSignalsChanged(lastStep, sampled, watchTargets, activeCircuit.id)) {
+        return prev;
+      }
+      return {
+        ...prev,
+        [activeCircuit.id]: appendWaveformStep(curList, sampled),
+      };
+    });
+  }, [
+    snapshot,
+    simActive,
+    watchRecording,
+    watchTargets,
+    activeCircuit,
+    project,
+    activeWatchTargets.length,
+  ]);
+
+  const isWireWatched = useCallback(
+    (wireId: string) => {
+      const id = makeWireWatchId(activeCircuit.id, wireId);
+      return watchTargets.some((t) => t.id === id);
+    },
+    [activeCircuit.id, watchTargets],
+  );
+
+  const isGateWatched = useCallback(
+    (gate: GateInstance) => {
+      const dp = getDefaultWatchPin(gate, project);
+      if (!dp) return false;
+      const id = makePinWatchId(activeCircuit.id, gate.id, dp.pinId);
+      return watchTargets.some((t) => t.id === id);
+    },
+    [activeCircuit.id, project, watchTargets],
+  );
+
+  const handleToggleWatchWire = useCallback(
+    (wire: Wire) => {
+      const id = makeWireWatchId(activeCircuit.id, wire.id);
+      setWatchTargets((prev) => {
+        if (prev.some((t) => t.id === id)) {
+          return prev.filter((t) => t.id !== id);
+        }
+        const label = buildWireWatchLabel(wire, activeCircuit);
+        return [
+          ...prev,
+          { id, circuitId: activeCircuit.id, kind: 'wire', wireId: wire.id, label, radix: 'auto' },
+        ];
+      });
+      setShowWatchPanel(true);
+    },
+    [activeCircuit],
+  );
+
+  const handleToggleWatchGate = useCallback(
+    (gate: GateInstance) => {
+      const dp = getDefaultWatchPin(gate, project);
+      if (!dp) {
+        store.showToast('このパーツには監視可能な端子がありません');
+        return;
+      }
+      const id = makePinWatchId(activeCircuit.id, gate.id, dp.pinId);
+      setWatchTargets((prev) => {
+        if (prev.some((t) => t.id === id)) {
+          return prev.filter((t) => t.id !== id);
+        }
+        const label = buildPinWatchLabel(gate, dp.pinId, dp.pinName);
+        return [
+          ...prev,
+          {
+            id,
+            circuitId: activeCircuit.id,
+            kind: 'pin',
+            gateId: gate.id,
+            pinId: dp.pinId,
+            label,
+            radix: 'auto',
+          },
+        ];
+      });
+      setShowWatchPanel(true);
+    },
+    [activeCircuit.id, project, store],
+  );
+
+  const handleAddAllCircuitPortsToWatch = useCallback(() => {
+    const portTypes = new Set(['MODULE_IN', 'MODULE_OUT', 'TOGGLE', 'CLOCK', 'LED', 'NUM_DISPLAY']);
+    setWatchTargets((prev) => {
+      const existing = new Set(prev.map((t) => t.id));
+      const added: WatchTarget[] = [];
+      for (const g of activeCircuit.gates) {
+        if (!portTypes.has(g.type)) continue;
+        const dp = getDefaultWatchPin(g, project);
+        if (!dp) continue;
+        const id = makePinWatchId(activeCircuit.id, g.id, dp.pinId);
+        if (existing.has(id)) continue;
+        existing.add(id);
+        added.push({
+          id,
+          circuitId: activeCircuit.id,
+          kind: 'pin',
+          gateId: g.id,
+          pinId: dp.pinId,
+          label: buildPinWatchLabel(g, dp.pinId, dp.pinName),
+          radix: 'auto',
+        });
+      }
+      return added.length > 0 ? [...prev, ...added] : prev;
+    });
+  }, [activeCircuit, project]);
+
+  const handleManualWatchSample = useCallback(() => {
+    if (!simActive || !snapshot) return;
+    const sampled = sampleWatchedSignals(watchTargets, activeCircuit, project, snapshot);
+    setWaveHistoryByCircuit((prev) => ({
+      ...prev,
+      [activeCircuit.id]: appendWaveformStep(prev[activeCircuit.id] ?? [], sampled),
+    }));
+  }, [simActive, snapshot, watchTargets, activeCircuit, project]);
+
+  const handleReorderWatchTarget = useCallback(
+    (targetId: string, dir: -1 | 1) => {
+      setWatchTargets((prev) => {
+        const curIds = prev.filter((t) => t.circuitId === activeCircuit.id).map((t) => t.id);
+        const pos = curIds.indexOf(targetId);
+        const swapPos = pos + dir;
+        if (pos === -1 || swapPos < 0 || swapPos >= curIds.length) return prev;
+        const idxA = prev.findIndex((t) => t.id === curIds[pos]);
+        const idxB = prev.findIndex((t) => t.id === curIds[swapPos]);
+        const next = prev.slice();
+        const tmp = next[idxA];
+        next[idxA] = next[idxB];
+        next[idxB] = tmp;
+        return next;
+      });
+    },
+    [activeCircuit.id],
+  );
 
   const handleEndDragGate = useCallback(() => {
     setDraggingGate(null);
@@ -203,6 +375,7 @@ export const App: React.FC = () => {
         setShowShortcutsModal((v) => !v);
       } else if (e.key === 'Escape') {
         setContextMenu(null);
+        setLivePopupPath(null);
         setSelectedGateIds(new Set());
         setSelectedWireIds(new Set());
       }
@@ -315,6 +488,9 @@ export const App: React.FC = () => {
         onOpenNetlistExport={() => setShowNetlistModal(true)}
         onOpenSymbolEditor={() => setShowSymbolModal(true)}
         onOpenHdlSource={(cid) => setHdlSourceCircuitId((cur) => (cur === cid ? null : cid))}
+        watchPanelOpen={showWatchPanel}
+        watchCount={activeWatchTargets.length}
+        onToggleWatchPanel={() => setShowWatchPanel((v) => !v)}
         onOpenShortcuts={() => setShowShortcutsModal(true)}
         onLoadSample={store.loadSampleProject}
       />
@@ -347,37 +523,73 @@ export const App: React.FC = () => {
         />
 
         <div className={`workspace-center ${hdlDockPos === 'right' ? 'dock-row' : 'dock-col'}`}>
-          <CircuitCanvas
-            project={project}
-            circuit={activeCircuit}
-            snapshot={snapshot}
-            simActive={simActive}
-            editLocked={editLocked}
-            runtimeInputs={runtimeInputs}
-            selectedGateIds={selectedGateIds}
-            selectedWireIds={selectedWireIds}
-            onSelect={(g, w) => {
-              setSelectedGateIds(g);
-              setSelectedWireIds(w);
-            }}
-            onAddGateAt={handleAddGateAt}
-            onReplaceGate={store.replaceGate}
-            onMoveGates={store.moveGates}
-            onAddWire={store.addWire}
-            onExtendFloatingWire={store.extendFloatingWire}
-            onUpdateWirePoints={store.updateWirePoints}
-            onInteractGate={store.interactGateClick}
-            onButtonPress={store.setButtonPressed}
-            onOpenSubcircuit={store.setActiveCircuit}
-            onQuickEditWireLabel={quickEditWireLabel}
-            onOpenContextMenu={setContextMenu}
-            onChangeInputMode={(mode) => store.updateSettings({ inputMode: mode })}
-            draggingGate={draggingGate}
-            onDragOverCanvasChange={setDragOverCanvas}
-            onDropComplete={handleEndDragGate}
-            viewportRef={viewportRef}
-            fitTrigger={fitTrigger}
-          />
+          <div className="workspace-canvas-col">
+            <CircuitCanvas
+              project={project}
+              circuit={activeCircuit}
+              snapshot={snapshot}
+              simActive={simActive}
+              editLocked={editLocked}
+              runtimeInputs={runtimeInputs}
+              selectedGateIds={selectedGateIds}
+              selectedWireIds={selectedWireIds}
+              onSelect={(g, w) => {
+                setSelectedGateIds(g);
+                setSelectedWireIds(w);
+              }}
+              onAddGateAt={handleAddGateAt}
+              onReplaceGate={store.replaceGate}
+              onMoveGates={store.moveGates}
+              onAddWire={store.addWire}
+              onExtendFloatingWire={store.extendFloatingWire}
+              onUpdateWirePoints={store.updateWirePoints}
+              onInteractGate={store.interactGateClick}
+              onButtonPress={store.setButtonPressed}
+              onOpenSubcircuit={store.setActiveCircuit}
+              onOpenLiveSubcircuitPopup={(gid) => setLivePopupPath([gid])}
+              onQuickEditWireLabel={quickEditWireLabel}
+              onOpenContextMenu={setContextMenu}
+              onChangeInputMode={(mode) => store.updateSettings({ inputMode: mode })}
+              draggingGate={draggingGate}
+              onDragOverCanvasChange={setDragOverCanvas}
+              onDropComplete={handleEndDragGate}
+              viewportRef={viewportRef}
+              fitTrigger={fitTrigger}
+            />
+
+            {showWatchPanel && (
+              <WatchWaveformPanel
+                circuit={activeCircuit}
+                project={project}
+                snapshot={snapshot}
+                simActive={simActive}
+                targets={watchTargets}
+                history={activeWaveHistory}
+                recording={watchRecording}
+                onToggleRecording={() => setWatchRecording((v) => !v)}
+                onManualSample={handleManualWatchSample}
+                onClearHistory={() =>
+                  setWaveHistoryByCircuit((prev) => ({ ...prev, [activeCircuit.id]: [] }))
+                }
+                onAddTarget={(target) =>
+                  setWatchTargets((prev) =>
+                    prev.some((t) => t.id === target.id) ? prev : [...prev, target],
+                  )
+                }
+                onAddAllCircuitPorts={handleAddAllCircuitPortsToWatch}
+                onRemoveTarget={(tid) =>
+                  setWatchTargets((prev) => prev.filter((t) => t.id !== tid))
+                }
+                onUpdateTarget={(tid, patch) =>
+                  setWatchTargets((prev) =>
+                    prev.map((t) => (t.id === tid ? { ...t, ...patch } : t)),
+                  )
+                }
+                onReorderTarget={handleReorderWatchTarget}
+                onClose={() => setShowWatchPanel(false)}
+              />
+            )}
+          </div>
 
           {hdlSourceCircuitId && project.circuits[hdlSourceCircuitId] && (
             <HdlDockPanel
@@ -415,12 +627,31 @@ export const App: React.FC = () => {
           onRerouteWire={store.rerouteSingleWire}
           onRenameCircuit={store.renameCircuit}
           onOpenCircuit={store.setActiveCircuit}
+          onOpenLiveSubcircuitPopup={(gid) => setLivePopupPath([gid])}
           onOpenHdlSource={(cid) => setHdlSourceCircuitId(cid)}
           onOpenMemoryEditor={(gid) => setMemoryGateId(gid)}
           onOpenSymbolEditor={() => setShowSymbolModal(true)}
           onDeleteSelection={store.deleteSelection}
+          isWireWatched={isWireWatched}
+          onToggleWatchWire={handleToggleWatchWire}
         />
       </main>
+
+      {livePopupPath && (
+        <LiveSubcircuitPopup
+          rootCircuit={activeCircuit}
+          project={project}
+          rootSnapshot={snapshot}
+          simActive={simActive}
+          gatePath={livePopupPath}
+          onChangeGatePath={setLivePopupPath}
+          onOpenCircuitTab={(cid) => {
+            setLivePopupPath(null);
+            store.setActiveCircuit(cid);
+          }}
+          onClose={() => setLivePopupPath(null)}
+        />
+      )}
 
       {contextMenu && (
         <ContextMenu
@@ -436,8 +667,17 @@ export const App: React.FC = () => {
             (project.circuits[contextMenu.gate.props.subcircuitId]?.hdlSource ||
               project.circuits[contextMenu.gate.props.subcircuitId]?.hdlFileSource),
           )}
+          targetSubIsStub={Boolean(
+            contextMenu.gate?.type === 'SUBCIRCUIT' &&
+            contextMenu.gate.props.subcircuitId &&
+            project.circuits[contextMenu.gate.props.subcircuitId]?.isStub,
+          )}
+          isWireWatched={Boolean(contextMenu.wire && isWireWatched(contextMenu.wire.id))}
+          isGateWatched={Boolean(contextMenu.gate && isGateWatched(contextMenu.gate))}
           onClose={() => setContextMenu(null)}
           onSetWireNetLabel={quickEditWireLabel}
+          onToggleWatchWire={handleToggleWatchWire}
+          onToggleWatchGate={handleToggleWatchGate}
           onToggleWireRouteMode={(w) =>
             store.updateWire(w.id, { routeMode: w.routeMode === 'grid' ? 'free' : 'grid' })
           }
@@ -452,6 +692,7 @@ export const App: React.FC = () => {
           onDelete={store.deleteSelection}
           onSetSubcircuitMode={(gid, mode) => store.updateGate(gid, {}, { displayMode: mode })}
           onOpenSubcircuit={store.setActiveCircuit}
+          onOpenLiveSubcircuitPopup={(gid) => setLivePopupPath([gid])}
           onOpenHdlSource={(cid) => setHdlSourceCircuitId(cid)}
           onOpenMemoryEditor={(gid) => setMemoryGateId(gid)}
           onAddTunnelAt={(pt: Point) => {

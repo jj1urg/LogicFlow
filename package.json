@@ -1,6 +1,6 @@
 {
   "name": "logicflow-sim",
-  "version": "0.15.0-r1.0",
+  "version": "0.16.0-r0.0",
   "private": true,
   "type": "module",
   "scripts": {

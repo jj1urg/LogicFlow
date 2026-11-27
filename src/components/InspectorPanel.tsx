@@ -1,5 +1,6 @@
 import React from 'react';
 import {
+  Activity,
   Database,
   ExternalLink,
   FileCode2,
@@ -8,6 +9,7 @@ import {
   RotateCw,
   Sliders,
   Trash2,
+  ZoomIn,
 } from 'lucide-react';
 import { GATE_CATALOG, getCompatibleReplacementTypes } from '../core/catalog';
 import {
@@ -50,10 +52,13 @@ interface InspectorPanelProps {
   onRerouteWire: (wireId: string) => void;
   onRenameCircuit: (circuitId: string, name: string) => void;
   onOpenCircuit: (circuitId: string) => void;
+  onOpenLiveSubcircuitPopup: (gateId: string) => void;
   onOpenHdlSource: (circuitId: string) => void;
   onOpenMemoryEditor: (gateId: string) => void;
   onOpenSymbolEditor: () => void;
   onDeleteSelection: () => void;
+  isWireWatched: (wireId: string) => boolean;
+  onToggleWatchWire: (wire: Wire) => void;
 }
 
 export const InspectorPanel: React.FC<InspectorPanelProps> = ({
@@ -70,10 +75,13 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
   onRerouteWire,
   onRenameCircuit,
   onOpenCircuit,
+  onOpenLiveSubcircuitPopup,
   onOpenHdlSource,
   onOpenMemoryEditor,
   onOpenSymbolEditor,
   onDeleteSelection,
+  isWireWatched,
+  onToggleWatchWire,
 }) => {
   const selectedGate =
     selectedGateIds.size === 1
@@ -119,6 +127,7 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
             onUpdate={(patch, propsPatch) => onUpdateGate(selectedGate.id, patch, propsPatch)}
             onReplace={(newType) => onReplaceGate(selectedGate.id, newType)}
             onOpenCircuit={onOpenCircuit}
+            onOpenLivePopup={() => onOpenLiveSubcircuitPopup(selectedGate.id)}
             onOpenHdlSource={onOpenHdlSource}
             onOpenMemoryEditor={() => onOpenMemoryEditor(selectedGate.id)}
           />
@@ -127,6 +136,8 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
             wire={selectedWire}
             snapshot={snapshot}
             simActive={simActive}
+            watched={isWireWatched(selectedWire.id)}
+            onToggleWatch={() => onToggleWatchWire(selectedWire)}
             onUpdate={(patch) => onUpdateWire(selectedWire.id, patch)}
             onReroute={() => onRerouteWire(selectedWire.id)}
           />
@@ -162,6 +173,7 @@ const GateInspector: React.FC<{
   onUpdate: (patch: Partial<GateInstance>, propsPatch?: Partial<GateProps>) => void;
   onReplace: (newType: GateType) => void;
   onOpenCircuit: (circuitId: string) => void;
+  onOpenLivePopup: () => void;
   onOpenHdlSource: (circuitId: string) => void;
   onOpenMemoryEditor: () => void;
 }> = ({
@@ -170,6 +182,7 @@ const GateInspector: React.FC<{
   onUpdate,
   onReplace,
   onOpenCircuit,
+  onOpenLivePopup,
   onOpenHdlSource,
   onOpenMemoryEditor,
 }) => {
@@ -587,9 +600,14 @@ const GateInspector: React.FC<{
             </div>
             {p.subcircuitId && project.circuits[p.subcircuitId] && (
               <>
-                <button className="prop-btn accent" onClick={() => onOpenCircuit(p.subcircuitId!)}>
+                {!project.circuits[p.subcircuitId].isStub && (
+                  <button className="prop-btn accent" onClick={onOpenLivePopup}>
+                    <ZoomIn size={13} /> ライブ内部を拡大表示（親の信号反映）
+                  </button>
+                )}
+                <button className="prop-btn" onClick={() => onOpenCircuit(p.subcircuitId!)}>
                   <ExternalLink size={13} /> 内部回路 "{project.circuits[p.subcircuitId].name}"
-                  を開く
+                  を別タブで開く
                 </button>
                 {(project.circuits[p.subcircuitId].hdlSource ||
                   project.circuits[p.subcircuitId].hdlFileSource) && (
@@ -615,9 +633,11 @@ const WireInspector: React.FC<{
   wire: Wire;
   snapshot: SimulationSnapshot | null;
   simActive: boolean;
+  watched: boolean;
+  onToggleWatch: () => void;
   onUpdate: (patch: Partial<Wire>) => void;
   onReroute: () => void;
-}> = ({ wire, snapshot, simActive, onUpdate, onReroute }) => {
+}> = ({ wire, snapshot, simActive, watched, onToggleWatch, onUpdate, onReroute }) => {
   const val = snapshot?.wireValues[wire.id];
   const bit = dominantState(val);
   const xCause = bit === BIT_X ? snapshot?.wireXCauses?.[wire.id] : undefined;
@@ -647,6 +667,9 @@ const WireInspector: React.FC<{
       </div>
       <button className="prop-btn" onClick={onReroute}>
         <RefreshCw size={13} /> この配線を自動再レイアウト
+      </button>
+      <button className={`prop-btn ${watched ? 'accent' : ''}`} onClick={onToggleWatch}>
+        <Activity size={13} /> {watched ? '信号ウォッチから解除' : '信号ウォッチ・波形に追加'}
       </button>
       <p className="muted-text" style={{ marginTop: 8 }}>
         線分や角ハンドルをドラッグして配線経路を手動調整できます。接続先パーツを動かすと自動で再レイアウトされます。

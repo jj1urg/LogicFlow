@@ -1,5 +1,6 @@
 import React, { useRef } from 'react';
 import {
+  Activity,
   Cpu,
   Download,
   Eye,
@@ -51,6 +52,9 @@ interface TopBarProps {
   onOpenNetlistExport: () => void;
   onOpenSymbolEditor: () => void;
   onOpenHdlSource: (circuitId: string) => void;
+  watchPanelOpen: boolean;
+  watchCount: number;
+  onToggleWatchPanel: () => void;
   onOpenShortcuts: () => void;
   onLoadSample: () => void;
 }
@@ -82,6 +86,9 @@ export const TopBar: React.FC<TopBarProps> = ({
   onOpenNetlistExport,
   onOpenSymbolEditor,
   onOpenHdlSource,
+  watchPanelOpen,
+  watchCount,
+  onToggleWatchPanel,
   onOpenShortcuts,
   onLoadSample,
 }) => {
@@ -320,6 +327,15 @@ export const TopBar: React.FC<TopBarProps> = ({
         </div>
 
         <div className="tabs-actions">
+          <button
+            className={`mini-btn ${watchPanelOpen ? 'active-watch' : ''}`}
+            onClick={onToggleWatchPanel}
+            title="信号ウォッチ一覧 & 波形タイムチャートパネルを表示 / 非表示"
+          >
+            <Activity size={12} />
+            <span>ウォッチ / 波形</span>
+            {watchCount > 0 && <span className="watch-count-pill">{watchCount}</span>}
+          </button>
           {activeHasHdl && activeCircuit && (
             <button
               className={`mini-btn active-hdl ${activeCircuit.hdlDiverged ? 'hdl-diverged' : ''}`}

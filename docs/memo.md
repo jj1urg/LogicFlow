@@ -11,11 +11,10 @@ generated:
 
 ## about develop management
 
-なし
+いまのところなし
 
 ## about fixes
 
-いまのところなし
 
 ## aboud features
 
