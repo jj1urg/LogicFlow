@@ -6,6 +6,13 @@
 
 ---
 
+## 2026-11-27 — v0.14-r2.1 Cloudflare Workers プレビュービルド対応 (`wrangler.jsonc`)
+
+### 実施内容
+
+- **Cloudflare Workers Preview 設定の追加** (`wrangler.jsonc`):
+  - 非 `main` ブランチ（`develop` 等）の Workers Builds プレビューデプロイ（`npx wrangler preview`）で要求される `"previews": {}` ブロックを `wrangler.jsonc` へ追加しました。
+
 ## 2026-11-27 — v0.14-r2.0 D_FF/REGISTER の EN ピン有効/無効切替対応 & 公開 URL 明記
 
 ### 実施内容
