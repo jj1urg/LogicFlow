@@ -639,6 +639,7 @@ export const App: React.FC = () => {
           onUpdateWatchTarget={(tid, patch) =>
             setWatchTargets((prev) => prev.map((t) => (t.id === tid ? { ...t, ...patch } : t)))
           }
+          onReorderWatchTarget={handleReorderWatchTarget}
           onToggleWatchPanel={() => setShowWatchPanel((v) => !v)}
         />
       </main>

@@ -1,6 +1,8 @@
 import React from 'react';
 import {
   Activity,
+  ChevronDown,
+  ChevronUp,
   Database,
   ExternalLink,
   FileCode2,
@@ -64,6 +66,7 @@ interface InspectorPanelProps {
   onToggleWatchWire: (wire: Wire) => void;
   onRemoveWatchTarget: (targetId: string) => void;
   onUpdateWatchTarget: (targetId: string, patch: Partial<WatchTarget>) => void;
+  onReorderWatchTarget: (targetId: string, dir: -1 | 1) => void;
   onToggleWatchPanel: () => void;
 }
 
@@ -91,6 +94,7 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
   onToggleWatchWire,
   onRemoveWatchTarget,
   onUpdateWatchTarget,
+  onReorderWatchTarget,
   onToggleWatchPanel,
 }) => {
   const activeWatchTargets = watchTargets.filter((t) => t.circuitId === circuit.id);
@@ -194,7 +198,7 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
               </button>
             </div>
             <div className="inspector-watch-cards">
-              {activeWatchTargets.map((t) => {
+              {activeWatchTargets.map((t, idx) => {
                 const entry = sampledWatch[t.id];
                 const val = entry?.value;
                 const bit = dominantState(val);
@@ -208,13 +212,31 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                       <span className="inspector-watch-label" title={t.label}>
                         {t.label}
                       </span>
-                      <button
-                        className="palette-act-btn danger"
-                        onClick={() => onRemoveWatchTarget(t.id)}
-                        title="ウォッチから解除"
-                      >
-                        <X size={11} />
-                      </button>
+                      <div className="watch-row-acts">
+                        <button
+                          className="palette-act-btn"
+                          disabled={idx === 0}
+                          onClick={() => onReorderWatchTarget(t.id, -1)}
+                          title="上へ移動"
+                        >
+                          <ChevronUp size={11} />
+                        </button>
+                        <button
+                          className="palette-act-btn"
+                          disabled={idx === activeWatchTargets.length - 1}
+                          onClick={() => onReorderWatchTarget(t.id, 1)}
+                          title="下へ移動"
+                        >
+                          <ChevronDown size={11} />
+                        </button>
+                        <button
+                          className="palette-act-btn danger"
+                          onClick={() => onRemoveWatchTarget(t.id)}
+                          title="ウォッチから解除"
+                        >
+                          <X size={11} />
+                        </button>
+                      </div>
                     </div>
                     {simActive && val ? (
                       <div className="signal-readout">
