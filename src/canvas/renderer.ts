@@ -554,14 +554,19 @@ function drawWire(
 
   // Fast straight polyline path for miniature nested subcircuit wires (avoids fillet trig overhead!)
   if (isNested) {
+    ctx.save();
     ctx.strokeStyle = color;
     ctx.lineWidth = isBus ? 3.4 : 2.2;
+    if (showSignals && bit === BIT_Z) {
+      ctx.setLineDash([5, 4]);
+    }
     ctx.beginPath();
     ctx.moveTo(wire.points[0].x, wire.points[0].y);
     for (let i = 1; i < wire.points.length; i++) {
       ctx.lineTo(wire.points[i].x, wire.points[i].y);
     }
     ctx.stroke();
+    ctx.restore();
     return;
   }
 
@@ -593,13 +598,19 @@ function drawWire(
     ctx.restore();
   }
 
-  // Render all 4 states (0, 1, X, Z) as clean solid lines
+  // Render 0/1/X as solid lines and Hi-Z (Z) as a crisp dashed line so floating state is unmistakable
   ctx.strokeStyle = color;
   ctx.lineWidth = baseWidth;
+  if (showSignals && bit === BIT_Z) {
+    ctx.setLineDash([8, 6]);
+  }
 
   ctx.beginPath();
   traceRoundedWirePath(ctx, wire.points, crossingByWireSeg, wire.id, cornerRadius);
   ctx.stroke();
+  if (showSignals && bit === BIT_Z) {
+    ctx.setLineDash([]);
+  }
 
   // Interactive adjustment handles on selected wires (and subtle mid-grab hint on hovered wire segment)
   if (!isNested && isSelected) {
