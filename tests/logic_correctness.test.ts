@@ -1085,16 +1085,21 @@ describe('Sequential, Memory, Tunnels & Oscillation Handling', () => {
     // 1. Unit checks for fitValueWidth & resolveValues
     expect(toBinString(fitValueWidth(fromLiteral('0', 1), 4))).toBe('0000');
     expect(toBinString(fitValueWidth(fromLiteral('1', 1), 4))).toBe('0001');
-    expect(toBinString(fitValueWidth(fromLiteral('x', 1), 4))).toBe('000X');
+    expect(toBinString(fitValueWidth(fromLiteral('x', 1), 4))).toBe('XXXX');
+    expect(toBinString(fitValueWidth(fromLiteral('x', 1), 8))).toBe('XXXXXXXX');
     expect(toBinString(fitValueWidth(fromLiteral('z', 1), 4))).toBe('ZZZZ');
+    expect(toBinString(fitValueWidth(fromLiteral('z', 1), 8))).toBe('ZZZZZZZZ');
     expect(toBinString(fitValueWidth(fromInt(0x2a, 8), 4))).toBe('1010');
     expect(toBinString(fitValueWidth(fromLiteral('0bxxxx0101', 8), 4))).toBe('0101');
 
-    // Multi-driver 1-bit TRIBUFs driving a 4-bit net
+    // Multi-driver 1-bit TRIBUFs driving a 4-bit / 8-bit net
     expect(toBinString(resolveValues([fromLiteral('0', 1), fromLiteral('z', 1)], 4))).toBe('0000');
     expect(toBinString(resolveValues([fromLiteral('1', 1), fromLiteral('z', 1)], 4))).toBe('0001');
     expect(toBinString(resolveValues([fromLiteral('z', 1), fromLiteral('z', 1)], 4))).toBe('ZZZZ');
-    expect(toBinString(resolveValues([fromLiteral('0', 1), fromLiteral('1', 1)], 4))).toBe('000X');
+    expect(toBinString(resolveValues([fromLiteral('0', 1), fromLiteral('1', 1)], 4))).toBe('XXXX');
+    expect(toBinString(resolveValues([fromLiteral('0', 1), fromLiteral('1', 1)], 8))).toBe(
+      'XXXXXXXX',
+    );
 
     // 2. End-to-end: 1-bit TOGGLE & 1-bit TRIBUF wired directly to 4-bit SEVEN_SEG
     const circ: CircuitDocument = {
@@ -1173,6 +1178,24 @@ describe('Sequential, Memory, Tunnels & Oscillation Handling', () => {
           label: 'SEG3',
           props: { bitWidth: 4, segMode: 'hex' },
         },
+        {
+          id: 'x_c',
+          type: 'CONST',
+          x: 0,
+          y: 360,
+          rotation: 0,
+          label: 'X1',
+          props: { bitWidth: 1, value: 'X' },
+        },
+        {
+          id: 'seg4',
+          type: 'SEVEN_SEG',
+          x: 200,
+          y: 360,
+          rotation: 0,
+          label: 'SEG2D',
+          props: { bitWidth: 8, segMode: 'hex', segDigits: 2 },
+        },
       ],
       wires: [
         wire('w_sw', 'sw', 'out', 'seg1', 'in'),
@@ -1180,6 +1203,7 @@ describe('Sequential, Memory, Tunnels & Oscillation Handling', () => {
         wire('w_te', 'tri_en', 'out', 'tri', 'en'),
         wire('w_to', 'tri', 'out', 'seg2', 'in'),
         wire('w_wide', 'wide_c', 'out', 'seg3', 'in'),
+        wire('w_x2d', 'x_c', 'out', 'seg4', 'in'),
       ],
     };
     const proj = makeProject(circ);
@@ -1192,6 +1216,9 @@ describe('Sequential, Memory, Tunnels & Oscillation Handling', () => {
     expect(dominantState(snap0.wireValues['w_to'])).toBe(BIT_0);
     expect(toBinString(snap0.pinDrivenValues!['tri:out'])).toBe('0');
     expect(toUnsignedInt(fitValueWidth(snap0.pinValues['seg3:in'], 4))).toBe(0xa);
+    // 1-bit X into 2-digit (8-bit) SEVEN_SEG extends as all-X so both digits show 'E' (not '0E')
+    expect(toBinString(snap0.wireValues['w_x2d'])).toBe('XXXXXXXX');
+    expect(dominantState(snap0.wireValues['w_x2d'])).toBe(BIT_X);
 
     // Case B: SW=1, TRIBUF(EN=1, D=1) -> both 4-bit wires resolve to 0001 (dominant BIT_1)
     const snap1 = simulateCircuit(circ, proj, createEmptySequentialState(), {

@@ -120,7 +120,7 @@ export function resizeValue(val: LogicValue, width: number, fill: Bit = BIT_0): 
 /**
  * Fit a logic value to a target bit width:
  * - If wider than target: keep only the lower `width` bits (LSB truncation).
- * - If narrower than target: MSB zero-pad when actively driven, or keep all-Z when completely Hi-Z.
+ * - If narrower than target: keep all-Z as Z and all-X as X across MSBs; otherwise MSB zero-pad.
  */
 export function fitValueWidth(val: LogicValue, width: number): LogicValue {
   const w = Math.max(1, Math.min(64, width));
@@ -128,7 +128,11 @@ export function fitValueWidth(val: LogicValue, width: number): LogicValue {
   if (val.width > w) {
     return { width: w, bits: val.bits.slice(0, w) };
   }
-  const fill: Bit = val.bits.every((b) => b === BIT_Z) ? BIT_Z : BIT_0;
+  const fill: Bit = val.bits.every((b) => b === BIT_Z)
+    ? BIT_Z
+    : val.bits.every((b) => b === BIT_X)
+      ? BIT_X
+      : BIT_0;
   return resizeValue(val, w, fill);
 }
 
@@ -305,10 +309,22 @@ export function resolveValues(drivers: LogicValue[], width: number): LogicValue 
     for (const d of drivers) {
       col.push(i < d.bits.length ? d.bits[i] : BIT_Z);
     }
-    const resolved = resolveBit(col);
-    // When all active drivers are narrower than the net, zero-pad the uncovered MSBs
-    // while keeping all-Z nets completely Hi-Z when every driver is tri-stated.
-    bits[i] = resolved === BIT_Z && maxActiveWidth > 0 && i >= maxActiveWidth ? BIT_0 : resolved;
+    bits[i] = resolveBit(col);
+  }
+  // When all active drivers are narrower than the net, extend uncovered MSBs:
+  // all-X active bits extend as X (consistent with all-Z -> Z); concrete active bits zero-pad.
+  if (maxActiveWidth > 0 && maxActiveWidth < width) {
+    let allActiveX = true;
+    for (let i = 0; i < maxActiveWidth; i++) {
+      if (bits[i] !== BIT_X) {
+        allActiveX = false;
+        break;
+      }
+    }
+    const padBit: Bit = allActiveX ? BIT_X : BIT_0;
+    for (let i = maxActiveWidth; i < width; i++) {
+      if (bits[i] === BIT_Z) bits[i] = padBit;
+    }
   }
   return { width, bits };
 }
