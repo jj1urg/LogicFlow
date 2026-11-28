@@ -1766,19 +1766,21 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
 
       {/* Floating Bottom Status & Zoom Controls */}
       <div className="canvas-statusbar">
-        <span className="status-chip">
-          X: {Math.round(cursorWorld.x)}, Y: {Math.round(cursorWorld.y)}
-        </span>
-        <span className="status-chip">
-          {project.settings.routeMode === 'grid' ? 'グリッドフィット配線' : '自由配線'}
-        </span>
-        <span className={`status-chip ${simActive ? 'chip-live' : 'chip-paused'}`}>
-          {editLocked
-            ? `RUN (COMPILED) · ${snapshot?.iterations ?? 0} Δ`
-            : simActive
-              ? `LIVE · ${snapshot?.iterations ?? 0} Δ`
-              : 'EDIT MODE'}
-        </span>
+        <div className="statusbar-left">
+          <span className="status-chip status-chip-coords">
+            X: {Math.round(cursorWorld.x)}, Y: {Math.round(cursorWorld.y)}
+          </span>
+          <span className="status-chip status-chip-route">
+            {project.settings.routeMode === 'grid' ? 'グリッドフィット配線' : '自由配線'}
+          </span>
+          <span className={`status-chip ${simActive ? 'chip-live' : 'chip-paused'}`}>
+            {editLocked
+              ? `RUN · ${snapshot?.iterations ?? 0} Δ`
+              : simActive
+                ? `LIVE · ${snapshot?.iterations ?? 0} Δ`
+                : 'EDIT'}
+          </span>
+        </div>
 
         {/* Input Mode Switcher (Auto / Trackpad / Mouse) */}
         <div
