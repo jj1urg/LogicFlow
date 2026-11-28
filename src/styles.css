@@ -3022,7 +3022,7 @@ body,
 }
 
 .mobile-drawer-backdrop {
-  position: fixed;
+  position: absolute;
   inset: 0;
   z-index: 40;
   background: rgba(2, 6, 23, 0.56);
@@ -3057,11 +3057,35 @@ body,
     width: 112px;
   }
 
+  /* Separate circuit tabs and actions (ウォッチ/波形, HDLソース, シンボル定義) into two clean rows on mobile */
   .topbar-row.tabs-bar {
-    flex-wrap: nowrap;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 5px;
+    padding: 5px 8px;
+  }
+
+  .tabs-list {
+    width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .tabs-list::-webkit-scrollbar {
+    display: none;
+  }
+
+  .tabs-actions {
+    width: 100%;
     overflow-x: auto;
     gap: 6px;
-    padding: 4px 8px;
+    padding-top: 5px;
+    border-top: 1px solid var(--border);
+    scrollbar-width: none;
+  }
+
+  .tabs-actions::-webkit-scrollbar {
+    display: none;
   }
 
   .signal-legend {
@@ -3074,14 +3098,19 @@ body,
 
   .sidebar-slot.sidebar-left,
   .sidebar-slot.sidebar-right {
-    position: fixed;
-    top: 84px;
+    position: absolute;
+    top: 0;
     bottom: 0;
     z-index: 45;
     box-shadow: 0 18px 42px rgba(0, 0, 0, 0.72);
     transition:
       transform 240ms cubic-bezier(0.22, 1, 0.36, 1),
       opacity 180ms ease;
+  }
+
+  .context-menu {
+    max-height: calc(100vh - 20px);
+    overflow-y: auto;
   }
 
   .sidebar-slot.sidebar-left {

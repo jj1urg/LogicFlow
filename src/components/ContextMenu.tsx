@@ -118,22 +118,24 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const onDown = (e: MouseEvent) => {
+    const onDown = (e: MouseEvent | TouchEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) onClose();
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
     };
     window.addEventListener('mousedown', onDown);
+    window.addEventListener('touchstart', onDown, { passive: true });
     window.addEventListener('keydown', onKey);
     return () => {
       window.removeEventListener('mousedown', onDown);
+      window.removeEventListener('touchstart', onDown);
       window.removeEventListener('keydown', onKey);
     };
   }, [onClose]);
 
-  const left = Math.min(menu.screenX, window.innerWidth - 250);
-  const top = Math.min(menu.screenY, window.innerHeight - 320);
+  const left = Math.max(8, Math.min(menu.screenX, window.innerWidth - 256));
+  const top = Math.max(8, Math.min(menu.screenY, window.innerHeight - 320));
 
   const run = (fn: () => void) => {
     fn();

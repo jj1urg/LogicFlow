@@ -145,7 +145,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
     null,
   );
   const [spacePanning, setSpacePanning] = useState(false);
-  const [touchDraggingGate, setTouchDraggingGate] = useState(false);
+  const [touchHoldMode, setTouchHoldMode] = useState<'gate-hold' | 'context-hold' | null>(null);
   const [dragGhostWorld, setDragGhostWorld] = useState<Point | null>(null);
   const [replaceTargetGateId, setReplaceTargetGateId] = useState<string | null>(null);
 
@@ -1041,6 +1041,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
     onButtonPress,
     onOpenSubcircuit,
     onOpenLiveSubcircuitPopup,
+    onOpenContextMenu,
   });
   touchCtxRef.current = {
     circuit,
@@ -1057,6 +1058,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
     onButtonPress,
     onOpenSubcircuit,
     onOpenLiveSubcircuitPopup,
+    onOpenContextMenu,
   };
 
   // Native non-passive wheel, gesture (Safari), and touch handlers scoped strictly to the canvas.
@@ -1154,10 +1156,10 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
       }
     };
 
-    // Unified 1-finger (pan / tap / long-press gate drag) & 2-finger (pinch + pan) touch controller
+    // Unified 1-finger (pan / tap / long-press gate drag & context menu) & 2-finger (pinch + pan) touch controller
     let pinchState: { dist: number; cx: number; cy: number } | null = null;
     let singleTouch: {
-      mode: 'pending' | 'pan' | 'drag-gate';
+      mode: 'pending' | 'pan' | 'drag-gate' | 'context-hold';
       startClientX: number;
       startClientY: number;
       lastClientX: number;
@@ -1187,8 +1189,8 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
       if (singleTouch?.buttonDownId) {
         touchCtxRef.current.onButtonPress(singleTouch.buttonDownId, false);
       }
-      if (singleTouch?.mode === 'drag-gate') {
-        setTouchDraggingGate(false);
+      if (singleTouch?.mode === 'drag-gate' || singleTouch?.mode === 'context-hold') {
+        setTouchHoldMode(null);
       }
       singleTouch = null;
     };
@@ -1245,7 +1247,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
         }
 
         const st = {
-          mode: 'pending' as 'pending' | 'pan' | 'drag-gate',
+          mode: 'pending' as 'pending' | 'pan' | 'drag-gate' | 'context-hold',
           startClientX: t.clientX,
           startClientY: t.clientY,
           lastClientX: t.clientX,
@@ -1263,26 +1265,38 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
         };
         singleTouch = st;
 
-        // Long-press (300ms) on a gate enters gate-drag mode on smartphones!
-        if (gateHit && !ctx.editLocked && !ctx.wiring) {
+        // Long-press (300ms):
+        // - On a gate (edit mode): drag to move, OR release without moving to open context menu!
+        // - On a gate (run mode), wire, or empty canvas: release without moving to open context menu!
+        if (!ctx.wiring && !pinHit && !floatHit) {
           st.holdTimer = window.setTimeout(() => {
             if (singleTouch !== st || st.mode !== 'pending') return;
             st.holdTimer = null;
-            st.mode = 'drag-gate';
             if (st.buttonDownId) {
               touchCtxRef.current.onButtonPress(st.buttonDownId, false);
               st.buttonDownId = undefined;
             }
             const cur = touchCtxRef.current;
-            const nextSel = cur.selectedGateIds.has(gateHit.id)
-              ? new Set(cur.selectedGateIds)
-              : new Set([gateHit.id]);
-            cur.onSelect(nextSel, new Set());
-            st.gateStartPos = new Map();
-            for (const g of cur.circuit.gates) {
-              if (nextSel.has(g.id)) st.gateStartPos.set(g.id, { x: g.x, y: g.y });
+            if (gateHit && !cur.editLocked) {
+              st.mode = 'drag-gate';
+              const nextSel = cur.selectedGateIds.has(gateHit.id)
+                ? new Set(cur.selectedGateIds)
+                : new Set([gateHit.id]);
+              cur.onSelect(nextSel, new Set());
+              st.gateStartPos = new Map();
+              for (const g of cur.circuit.gates) {
+                if (nextSel.has(g.id)) st.gateStartPos.set(g.id, { x: g.x, y: g.y });
+              }
+              setTouchHoldMode('gate-hold');
+            } else {
+              st.mode = 'context-hold';
+              if (gateHit && !cur.selectedGateIds.has(gateHit.id)) {
+                cur.onSelect(new Set([gateHit.id]), new Set());
+              } else if (wireHit && !cur.selectedWireIds.has(wireHit.wire.id)) {
+                cur.onSelect(new Set(), new Set([wireHit.wire.id]));
+              }
+              setTouchHoldMode('context-hold');
             }
-            setTouchDraggingGate(true);
             try {
               navigator.vibrate?.(18);
             } catch {
@@ -1324,9 +1338,12 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
         const dxTotal = t.clientX - singleTouch.startClientX;
         const dyTotal = t.clientY - singleTouch.startClientY;
 
-        if (singleTouch.mode === 'pending') {
+        if (singleTouch.mode === 'pending' || singleTouch.mode === 'context-hold') {
           if (Math.hypot(dxTotal, dyTotal) > 8) {
             clearSingleHoldTimer();
+            if (singleTouch.mode === 'context-hold') {
+              setTouchHoldMode(null);
+            }
             if (singleTouch.buttonDownId) {
               touchCtxRef.current.onButtonPress(singleTouch.buttonDownId, false);
               singleTouch.buttonDownId = undefined;
@@ -1410,7 +1427,28 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
       }
 
       if (st.mode === 'drag-gate') {
-        setTouchDraggingGate(false);
+        setTouchHoldMode(null);
+        // Released after >= 300ms long-press WITHOUT moving the gate -> open context menu!
+        if (!st.movedGate && st.gateHit) {
+          cur.onOpenContextMenu({
+            screenX: st.startClientX,
+            screenY: st.startClientY,
+            worldPos: st.startWorld,
+            gate: st.gateHit,
+          });
+        }
+        return;
+      }
+
+      if (st.mode === 'context-hold') {
+        setTouchHoldMode(null);
+        cur.onOpenContextMenu({
+          screenX: st.startClientX,
+          screenY: st.startClientY,
+          worldPos: st.startWorld,
+          gate: st.gateHit ?? undefined,
+          wire: st.gateHit ? undefined : st.wireHit?.wire,
+        });
         return;
       }
 
@@ -1692,9 +1730,13 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
         onContextMenu={handleContextMenu}
       />
 
-      {/* Touch Long-Press Gate Drag Banner */}
-      {touchDraggingGate && (
-        <div className="wiring-banner">パーツを移動中 — 指を離すと位置を確定します</div>
+      {/* Touch Long-Press Banner */}
+      {touchHoldMode && (
+        <div className="wiring-banner">
+          {touchHoldMode === 'gate-hold'
+            ? '長押し中 — ドラッグで移動 / そのまま離すとメニュー'
+            : '指を離すとメニューを表示します'}
+        </div>
       )}
 
       {/* Wiring Mode Banner */}
