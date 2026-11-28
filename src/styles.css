@@ -1455,6 +1455,10 @@ body,
   cursor: ew-resize;
 }
 
+.hdl-resize-grip {
+  display: none;
+}
+
 .hdl-dock-header {
   position: relative;
   display: flex;
@@ -1462,20 +1466,26 @@ body,
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 8px;
-  padding: 6px 40px 6px 10px;
+  padding: 6px 68px 6px 10px;
   background: var(--bg-surface);
   border-bottom: 1px solid var(--border-strong);
 }
 
-.hdl-close-btn {
+.hdl-corner-actions {
   position: absolute;
   top: 6px;
   right: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  z-index: 2;
+}
+
+.hdl-corner-btn {
   width: 26px;
   height: 26px;
   padding: 0;
   justify-content: center;
-  z-index: 2;
 }
 
 .hdl-dock-title-group {
@@ -3240,5 +3250,41 @@ body,
 
   .watch-list-col {
     width: 175px;
+  }
+
+  /* Mobile HDL & Watch bottom panels: hide desktop right-dock toggle & provide tactile touch resize grip */
+  .hdl-dock-toggle-btn {
+    display: none;
+  }
+
+  .hdl-dock-header {
+    padding-right: 40px;
+  }
+
+  .hdl-resize-handle.handle-bottom {
+    position: relative;
+    top: auto;
+    left: auto;
+    right: auto;
+    height: 18px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg-surface);
+    border-bottom: 1px solid rgba(51, 65, 85, 0.45);
+    touch-action: none;
+  }
+
+  .hdl-resize-handle.handle-bottom:hover {
+    background: rgba(56, 189, 248, 0.14);
+  }
+
+  .hdl-resize-grip {
+    display: block;
+    width: 38px;
+    height: 4px;
+    border-radius: 999px;
+    background: #64748b;
   }
 }

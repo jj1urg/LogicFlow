@@ -154,23 +154,35 @@ export const WatchWaveformPanel: React.FC<WatchWaveformPanelProps> = ({
     return opts;
   }, [circuit, project, circuitTargets]);
 
-  // Vertical dock resize
+  // Vertical dock resize (mouse + mobile touch)
   useEffect(() => {
-    const onMove = (e: MouseEvent) => {
+    const applyY = (clientY: number) => {
       if (!resizeRef.current) return;
-      const delta = resizeRef.current.startY - e.clientY;
+      const delta = resizeRef.current.startY - clientY;
       setHeight(
-        Math.max(150, Math.min(window.innerHeight * 0.55, resizeRef.current.origH + delta)),
+        Math.max(150, Math.min(window.innerHeight * 0.65, resizeRef.current.origH + delta)),
       );
+    };
+    const onMove = (e: MouseEvent) => applyY(e.clientY);
+    const onTouchMove = (e: TouchEvent) => {
+      if (!resizeRef.current || e.touches.length !== 1) return;
+      e.preventDefault();
+      applyY(e.touches[0].clientY);
     };
     const onUp = () => {
       resizeRef.current = null;
     };
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
+    window.addEventListener('touchmove', onTouchMove, { passive: false });
+    window.addEventListener('touchend', onUp);
+    window.addEventListener('touchcancel', onUp);
     return () => {
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
+      window.removeEventListener('touchmove', onTouchMove);
+      window.removeEventListener('touchend', onUp);
+      window.removeEventListener('touchcancel', onUp);
     };
   }, []);
 
@@ -429,8 +441,15 @@ export const WatchWaveformPanel: React.FC<WatchWaveformPanelProps> = ({
           e.preventDefault();
           resizeRef.current = { startY: e.clientY, origH: height };
         }}
+        onTouchStart={(e) => {
+          if (e.touches.length !== 1) return;
+          resizeRef.current = { startY: e.touches[0].clientY, origH: height };
+        }}
         title="ドラッグして高さを変更"
-      />
+        aria-label="波形パネル高さ調整ハンドル"
+      >
+        <span className="hdl-resize-grip" aria-hidden="true" />
+      </div>
 
       {/* Header Controls */}
       <div className="watch-dock-header">

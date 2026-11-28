@@ -136,6 +136,7 @@ export const App: React.FC = () => {
       if (e.matches) {
         setLeftSidebarOpen(false);
         setRightSidebarOpen(false);
+        setHdlDockPos('bottom');
       } else {
         setLeftSidebarOpen(true);
         setRightSidebarOpen(true);

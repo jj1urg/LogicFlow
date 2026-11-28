@@ -441,7 +441,8 @@ export const HdlDockPanel: React.FC<HdlDockPanelProps> = ({
     const onMove = (ev: MouseEvent) => {
       if (dock === 'bottom') {
         const delta = startY - ev.clientY;
-        setDockSize(Math.max(160, Math.min(580, startSize + delta)));
+        const maxH = Math.max(260, Math.min(680, Math.round(window.innerHeight * 0.72)));
+        setDockSize(Math.max(150, Math.min(maxH, startSize + delta)));
       } else {
         const delta = startX - ev.clientX;
         setDockSize(Math.max(300, Math.min(780, startSize + delta)));
@@ -455,6 +456,36 @@ export const HdlDockPanel: React.FC<HdlDockPanelProps> = ({
     window.addEventListener('mouseup', onUp);
   };
 
+  const startTouchResize = (e: React.TouchEvent) => {
+    if (e.touches.length !== 1) return;
+    const t0 = e.touches[0];
+    const startX = t0.clientX;
+    const startY = t0.clientY;
+    const startSize = dockSize;
+
+    const onMove = (ev: TouchEvent) => {
+      if (ev.touches.length !== 1) return;
+      ev.preventDefault();
+      const t = ev.touches[0];
+      if (dock === 'bottom') {
+        const delta = startY - t.clientY;
+        const maxH = Math.max(260, Math.min(680, Math.round(window.innerHeight * 0.74)));
+        setDockSize(Math.max(150, Math.min(maxH, startSize + delta)));
+      } else {
+        const delta = startX - t.clientX;
+        setDockSize(Math.max(280, Math.min(780, startSize + delta)));
+      }
+    };
+    const onEnd = () => {
+      window.removeEventListener('touchmove', onMove);
+      window.removeEventListener('touchend', onEnd);
+      window.removeEventListener('touchcancel', onEnd);
+    };
+    window.addEventListener('touchmove', onMove, { passive: false });
+    window.addEventListener('touchend', onEnd);
+    window.addEventListener('touchcancel', onEnd);
+  };
+
   const style: React.CSSProperties = dock === 'bottom' ? { height: dockSize } : { width: dockSize };
 
   return (
@@ -462,8 +493,12 @@ export const HdlDockPanel: React.FC<HdlDockPanelProps> = ({
       <div
         className={`hdl-resize-handle handle-${dock}`}
         onMouseDown={startResize}
+        onTouchStart={startTouchResize}
         title="ドラッグでパネルサイズを調整"
-      />
+        aria-label="パネルサイズ調整ハンドル"
+      >
+        {dock === 'bottom' && <span className="hdl-resize-grip" aria-hidden="true" />}
+      </div>
 
       <div className="hdl-dock-header">
         <div className="hdl-dock-title-group">
@@ -609,23 +644,26 @@ export const HdlDockPanel: React.FC<HdlDockPanelProps> = ({
           <button className="icon-btn" onClick={handleDownload} title=".sv ファイルとして保存">
             <Download size={13} />
           </button>
+        </div>
+
+        <div className="hdl-corner-actions">
           <button
-            className="icon-btn"
+            className="icon-btn hdl-corner-btn hdl-dock-toggle-btn"
             onClick={() => onChangeDock(dock === 'bottom' ? 'right' : 'bottom')}
             title={dock === 'bottom' ? '右側にドッキング' : '下部にドッキング'}
+            aria-label={dock === 'bottom' ? '右側にドッキング' : '下部にドッキング'}
           >
             {dock === 'bottom' ? <PanelRight size={14} /> : <PanelBottom size={14} />}
           </button>
+          <button
+            className="icon-btn hdl-corner-btn"
+            onClick={onClose}
+            title="HDLソースパネルを閉じる"
+            aria-label="HDLソースパネルを閉じる"
+          >
+            <X size={14} />
+          </button>
         </div>
-
-        <button
-          className="icon-btn hdl-close-btn"
-          onClick={onClose}
-          title="HDLソースパネルを閉じる"
-          aria-label="HDLソースパネルを閉じる"
-        >
-          <X size={14} />
-        </button>
       </div>
 
       {/* Unified HDL Project multi-file bar + Top Module selector */}
