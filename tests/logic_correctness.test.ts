@@ -11,11 +11,14 @@ import {
   bitOr,
   bitTriBuf,
   bitXor,
+  dominantState,
+  fitValueWidth,
   fromInt,
   fromLiteral,
   LogicValue,
   makeUniform,
   resolveBit,
+  resolveValues,
   toBinString,
   toHexString,
   toUnsignedInt,
@@ -1076,5 +1079,136 @@ describe('Sequential, Memory, Tunnels & Oscillation Handling', () => {
     expect(ringSnap.wireXCauses?.['wr1']).toBe('oscillation');
     expect(ringSnap.wireXCauses?.['wr2']).toBe('oscillation');
     expect(ringSnap.wireXCauses?.['wr3']).toBe('oscillation');
+  });
+
+  it('zero-pads MSBs on narrower active drivers, preserves all-Z on disabled TRIBUF, and truncates wider buses to lower bits', () => {
+    // 1. Unit checks for fitValueWidth & resolveValues
+    expect(toBinString(fitValueWidth(fromLiteral('0', 1), 4))).toBe('0000');
+    expect(toBinString(fitValueWidth(fromLiteral('1', 1), 4))).toBe('0001');
+    expect(toBinString(fitValueWidth(fromLiteral('x', 1), 4))).toBe('000X');
+    expect(toBinString(fitValueWidth(fromLiteral('z', 1), 4))).toBe('ZZZZ');
+    expect(toBinString(fitValueWidth(fromInt(0x2a, 8), 4))).toBe('1010');
+    expect(toBinString(fitValueWidth(fromLiteral('0bxxxx0101', 8), 4))).toBe('0101');
+
+    // Multi-driver 1-bit TRIBUFs driving a 4-bit net
+    expect(toBinString(resolveValues([fromLiteral('0', 1), fromLiteral('z', 1)], 4))).toBe('0000');
+    expect(toBinString(resolveValues([fromLiteral('1', 1), fromLiteral('z', 1)], 4))).toBe('0001');
+    expect(toBinString(resolveValues([fromLiteral('z', 1), fromLiteral('z', 1)], 4))).toBe('ZZZZ');
+    expect(toBinString(resolveValues([fromLiteral('0', 1), fromLiteral('1', 1)], 4))).toBe('000X');
+
+    // 2. End-to-end: 1-bit TOGGLE & 1-bit TRIBUF wired directly to 4-bit SEVEN_SEG
+    const circ: CircuitDocument = {
+      id: 'c_seg_width',
+      name: 'SegWidthMismatch',
+      gates: [
+        {
+          id: 'sw',
+          type: 'TOGGLE',
+          x: 0,
+          y: 0,
+          rotation: 0,
+          label: 'SW',
+          props: { bitWidth: 1, value: '0' },
+        },
+        {
+          id: 'seg1',
+          type: 'SEVEN_SEG',
+          x: 200,
+          y: 0,
+          rotation: 0,
+          label: 'SEG1',
+          props: { bitWidth: 4, segMode: 'hex' },
+        },
+        {
+          id: 'tri_d',
+          type: 'TOGGLE',
+          x: 0,
+          y: 120,
+          rotation: 0,
+          label: 'D',
+          props: { bitWidth: 1, value: '0' },
+        },
+        {
+          id: 'tri_en',
+          type: 'TOGGLE',
+          x: 0,
+          y: 180,
+          rotation: 0,
+          label: 'EN',
+          props: { bitWidth: 1, value: '1' },
+        },
+        {
+          id: 'tri',
+          type: 'TRIBUF',
+          x: 120,
+          y: 120,
+          rotation: 0,
+          label: 'TRI',
+          props: { bitWidth: 1 },
+        },
+        {
+          id: 'seg2',
+          type: 'SEVEN_SEG',
+          x: 280,
+          y: 120,
+          rotation: 0,
+          label: 'SEG2',
+          props: { bitWidth: 4, segMode: 'hex' },
+        },
+        {
+          id: 'wide_c',
+          type: 'CONST',
+          x: 0,
+          y: 260,
+          rotation: 0,
+          label: 'W8',
+          props: { bitWidth: 8, value: '0x2A' },
+        },
+        {
+          id: 'seg3',
+          type: 'SEVEN_SEG',
+          x: 200,
+          y: 260,
+          rotation: 0,
+          label: 'SEG3',
+          props: { bitWidth: 4, segMode: 'hex' },
+        },
+      ],
+      wires: [
+        wire('w_sw', 'sw', 'out', 'seg1', 'in'),
+        wire('w_td', 'tri_d', 'out', 'tri', 'in0'),
+        wire('w_te', 'tri_en', 'out', 'tri', 'en'),
+        wire('w_to', 'tri', 'out', 'seg2', 'in'),
+        wire('w_wide', 'wide_c', 'out', 'seg3', 'in'),
+      ],
+    };
+    const proj = makeProject(circ);
+
+    // Case A: SW=0, TRIBUF(EN=1, D=0) -> both 4-bit wires resolve to 0000 (dominant BIT_0, NOT Hi-Z!)
+    const snap0 = simulateCircuit(circ, proj, createEmptySequentialState());
+    expect(toBinString(snap0.wireValues['w_sw'])).toBe('0000');
+    expect(dominantState(snap0.wireValues['w_sw'])).toBe(BIT_0);
+    expect(toBinString(snap0.wireValues['w_to'])).toBe('0000');
+    expect(dominantState(snap0.wireValues['w_to'])).toBe(BIT_0);
+    expect(toBinString(snap0.pinDrivenValues!['tri:out'])).toBe('0');
+    expect(toUnsignedInt(fitValueWidth(snap0.pinValues['seg3:in'], 4))).toBe(0xa);
+
+    // Case B: SW=1, TRIBUF(EN=1, D=1) -> both 4-bit wires resolve to 0001 (dominant BIT_1)
+    const snap1 = simulateCircuit(circ, proj, createEmptySequentialState(), {
+      runtimeInputs: { sw: { value: '1' }, tri_d: { value: '1' }, tri_en: { value: '1' } },
+    });
+    expect(toBinString(snap1.wireValues['w_sw'])).toBe('0001');
+    expect(dominantState(snap1.wireValues['w_sw'])).toBe(BIT_1);
+    expect(toBinString(snap1.wireValues['w_to'])).toBe('0001');
+    expect(dominantState(snap1.wireValues['w_to'])).toBe(BIT_1);
+    expect(toBinString(snap1.pinDrivenValues!['tri:out'])).toBe('1');
+
+    // Case C: TRIBUF(EN=0) -> 4-bit wire stays ZZZZ (dominant BIT_Z)
+    const snapZ = simulateCircuit(circ, proj, createEmptySequentialState(), {
+      runtimeInputs: { tri_d: { value: '0' }, tri_en: { value: '0' } },
+    });
+    expect(toBinString(snapZ.wireValues['w_to'])).toBe('ZZZZ');
+    expect(dominantState(snapZ.wireValues['w_to'])).toBe(BIT_Z);
+    expect(toBinString(snapZ.pinDrivenValues!['tri:out'])).toBe('Z');
   });
 });

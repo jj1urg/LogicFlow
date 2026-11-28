@@ -117,6 +117,21 @@ export function resizeValue(val: LogicValue, width: number, fill: Bit = BIT_0): 
   return { width: w, bits };
 }
 
+/**
+ * Fit a logic value to a target bit width:
+ * - If wider than target: keep only the lower `width` bits (LSB truncation).
+ * - If narrower than target: MSB zero-pad when actively driven, or keep all-Z when completely Hi-Z.
+ */
+export function fitValueWidth(val: LogicValue, width: number): LogicValue {
+  const w = Math.max(1, Math.min(64, width));
+  if (val.width === w) return val;
+  if (val.width > w) {
+    return { width: w, bits: val.bits.slice(0, w) };
+  }
+  const fill: Bit = val.bits.every((b) => b === BIT_Z) ? BIT_Z : BIT_0;
+  return resizeValue(val, w, fill);
+}
+
 export function valuesEqual(a: LogicValue | undefined, b: LogicValue | undefined): boolean {
   if (!a || !b || a.width !== b.width) return false;
   for (let i = 0; i < a.width; i++) {
@@ -277,14 +292,23 @@ export function hasBusContention(drivers: LogicValue[], width: number): boolean 
 
 export function resolveValues(drivers: LogicValue[], width: number): LogicValue {
   if (drivers.length === 0) return makeUniform(BIT_Z, width);
-  if (drivers.length === 1) return resizeValue(drivers[0], width, BIT_Z);
+  if (drivers.length === 1) return fitValueWidth(drivers[0], width);
+  let maxActiveWidth = 0;
+  for (const d of drivers) {
+    if (d.bits.some((b) => b !== BIT_Z) && d.width > maxActiveWidth) {
+      maxActiveWidth = d.width;
+    }
+  }
   const bits: Bit[] = new Array(width);
   for (let i = 0; i < width; i++) {
     const col: Bit[] = [];
     for (const d of drivers) {
       col.push(i < d.bits.length ? d.bits[i] : BIT_Z);
     }
-    bits[i] = resolveBit(col);
+    const resolved = resolveBit(col);
+    // When all active drivers are narrower than the net, zero-pad the uncovered MSBs
+    // while keeping all-Z nets completely Hi-Z when every driver is tri-stated.
+    bits[i] = resolved === BIT_Z && maxActiveWidth > 0 && i >= maxActiveWidth ? BIT_0 : resolved;
   }
   return { width, bits };
 }

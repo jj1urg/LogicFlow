@@ -12,6 +12,7 @@ import {
   bitOr,
   bitXor,
   compareVectors,
+  fitValueWidth,
   fromInt,
   fromLiteral,
   hasBusContention,
@@ -323,14 +324,14 @@ export function simulateCompiledCircuit(
   for (const [netId, w] of graph.netWidth.entries()) {
     const sig = graph.netSig.get(netId);
     const prev = sig && prevNetMap ? prevNetMap[sig] : undefined;
-    netValues.set(netId, prev ? resizeValue(prev, w, BIT_Z) : makeUniform(BIT_Z, w));
+    netValues.set(netId, prev ? fitValueWidth(prev, w) : makeUniform(BIT_Z, w));
   }
 
   const gateInternalValues: Record<string, LogicValue> = {};
   const subSnapshots: Record<string, SimulationSnapshot> = {};
   const pinDrivenValues: Record<string, LogicValue> = {};
 
-  // Helper to read an input pin's current net value resized to pin's width from an arbitrary netValue map
+  // Helper to read an input pin's current net value fitted to pin's width (lower bits / MSB zero-pad if active)
   const makeReadPin =
     (valsMap: Map<string, LogicValue>) =>
     (gateId: string, pinId: string, width: number): LogicValue => {
@@ -338,7 +339,7 @@ export function simulateCompiledCircuit(
       if (!netId) return makeUniform(BIT_Z, width);
       const val = valsMap.get(netId);
       if (!val) return makeUniform(BIT_Z, width);
-      return resizeValue(val, width, BIT_Z);
+      return fitValueWidth(val, width);
     };
   const readPin = makeReadPin(netValues);
 
@@ -844,7 +845,7 @@ export function simulateCompiledCircuit(
           if (pin.dir === 'out') {
             const childPinKey = pinKey(pin.id, 'in');
             const outVal = snap.pinValues[childPinKey] ?? makeUniform(BIT_Z, pin.bitWidth);
-            drivePinFn(gate.id, pin.id, resizeValue(outVal, pin.bitWidth, BIT_Z));
+            drivePinFn(gate.id, pin.id, fitValueWidth(outVal, pin.bitWidth));
             if (snap.pinXCauses?.[childPinKey] === 'oscillation') {
               const nid = graph.pinToNet.get(pinKey(gate.id, pin.id));
               if (nid) netOscSubDriven.add(nid);
@@ -971,7 +972,7 @@ export function simulateCompiledCircuit(
             if (!netId) return;
             if (singleDriverNets.has(netId)) {
               const w = graph.netWidth.get(netId) ?? val.width;
-              const nextVal = resizeValue(val, w, BIT_Z);
+              const nextVal = fitValueWidth(val, w);
               const prevVal = pVals.get(netId);
               if (!valuesEqual(prevVal, nextVal)) {
                 pVals.set(netId, nextVal);

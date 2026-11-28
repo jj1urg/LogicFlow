@@ -12,6 +12,7 @@ import {
   BIT_Z,
   Bit,
   dominantState,
+  fitValueWidth,
   formatValue,
   fromLiteral,
   LogicValue,
@@ -823,10 +824,23 @@ function drawGate(
       );
       break;
     case 'CONST':
-      drawConstGate(ctx, hw, hh, gate, outVal, showSignals);
+      drawConstGate(
+        ctx,
+        hw,
+        hh,
+        gate,
+        snapshot?.pinDrivenValues?.[outPinKey] ?? outVal,
+        showSignals,
+      );
       break;
     case 'LED':
-      drawLedGate(ctx, hw, hh, outVal, showSignals);
+      drawLedGate(
+        ctx,
+        hw,
+        hh,
+        outVal ? fitValueWidth(outVal, Math.max(1, gate.props.bitWidth ?? 1)) : outVal,
+        showSignals,
+      );
       break;
     case 'SEVEN_SEG':
       drawSevenSegGate(ctx, hw, hh, gate, snapshot?.pinValues[`${gate.id}:in`], showSignals);
@@ -890,15 +904,22 @@ function drawGate(
   for (const pin of pins) {
     const pos = getPinWorldPos(gate, pin);
     const pk = `${gate.id}:${pin.id}`;
-    // Output pins keep their own driven color when driving Z (e.g. disabled TRIBUF) or when the shared wire has a 0/1 conflict
+    // Output pins keep their own driven color (except when oscillating) so width mismatches,
+    // disabled TRIBUFs, or bus conflicts never miscolor the driver's own terminal.
     const drivenVal = pin.dir === 'out' ? snapshot?.pinDrivenValues?.[pk] : undefined;
     const netVal = snapshot?.pinValues[pk];
     const netCause = snapshot?.pinXCauses?.[pk];
-    const isHiZDriver = Boolean(drivenVal && dominantState(drivenVal) === BIT_Z);
-    const isConflictDriver = Boolean(drivenVal && netCause === 'conflict');
-    const useOwnDriven = isHiZDriver || isConflictDriver;
-    const pVal = useOwnDriven ? drivenVal : netVal;
-    const pCause = useOwnDriven ? undefined : netCause;
+    const useOwnDriven = Boolean(drivenVal && netCause !== 'oscillation');
+    const pVal = useOwnDriven
+      ? drivenVal
+      : netVal
+        ? fitValueWidth(netVal, pin.bitWidth)
+        : undefined;
+    const pCause = useOwnDriven
+      ? netCause === 'stub' && drivenVal && dominantState(drivenVal) === BIT_X
+        ? 'stub'
+        : undefined
+      : netCause;
     const pSig = signalColor(pVal, showSignals, pCause);
     const isPinHovered =
       !isNested && state.hoveredPin?.gate.id === gate.id && state.hoveredPin?.pin.id === pin.id;
@@ -1354,19 +1375,23 @@ function drawSevenSegGate(
   let mask = 0;
   let color = '#22c55e';
   if (showSignals && val) {
-    const dom = dominantState(val);
-    if (dom === BIT_X) {
+    const reqWidth = gate.props.segMode === 'direct' ? 7 : 4;
+    const fitted = fitValueWidth(val, reqWidth);
+    const hasX = fitted.bits.includes(BIT_X);
+    const allZ = fitted.bits.every((b) => b === BIT_Z);
+    const hasZ = fitted.bits.includes(BIT_Z);
+    if (hasX) {
       mask = 0x79; // E
       color = SIGNAL_COLORS[BIT_X];
-    } else if (dom === BIT_Z) {
+    } else if (allZ || (gate.props.segMode !== 'direct' && hasZ)) {
       mask = 0x40; // -
       color = SIGNAL_COLORS[BIT_Z];
     } else if (gate.props.segMode === 'direct') {
       for (let i = 0; i < 7; i++) {
-        if (val.bits[i] === BIT_1) mask |= 1 << i;
+        if (fitted.bits[i] === BIT_1) mask |= 1 << i;
       }
     } else {
-      const u = toUnsignedInt(val);
+      const u = toUnsignedInt(fitted);
       if (u !== null) mask = HEX_TO_7SEG[u & 0xf];
     }
   }
@@ -1408,7 +1433,9 @@ function drawNumDisplayGate(
   val: LogicValue | undefined,
   showSignals: boolean,
 ) {
-  const sig = signalColor(val, showSignals);
+  const reqWidth = Math.max(1, gate.props.bitWidth ?? 4);
+  const fitted = val ? fitValueWidth(val, reqWidth) : undefined;
+  const sig = signalColor(fitted, showSignals);
   roundRect(ctx, -hw, -hh, hw * 2, hh * 2, 7);
   ctx.fillStyle = '#090d16';
   ctx.fill();
@@ -1416,7 +1443,7 @@ function drawNumDisplayGate(
   ctx.lineWidth = 2;
   ctx.stroke();
 
-  const text = showSignals && val ? formatValue(val, gate.props.radix ?? 'hex') : '---';
+  const text = showSignals && fitted ? formatValue(fitted, gate.props.radix ?? 'hex') : '---';
   ctx.fillStyle = showSignals ? (sig.bit === BIT_0 ? '#e2e8f0' : sig.color) : '#64748b';
   ctx.font = '700 14px ui-monospace, SFMono-Regular, monospace';
   ctx.textAlign = 'center';
@@ -1770,9 +1797,17 @@ function drawPinTooltip(
   const netCause = snapshot?.pinXCauses?.[pk];
   const isHiZDriver = Boolean(drivenVal && dominantState(drivenVal) === BIT_Z);
   const isConflictDriver = Boolean(drivenVal && netCause === 'conflict');
-  const useOwnDriven = isHiZDriver || isConflictDriver;
-  const val = useOwnDriven ? drivenVal : netVal;
-  const xCause = useOwnDriven ? undefined : netCause;
+  const useOwnDriven = Boolean(drivenVal && netCause !== 'oscillation');
+  const val = useOwnDriven
+    ? drivenVal
+    : netVal
+      ? fitValueWidth(netVal, hit.pin.bitWidth)
+      : undefined;
+  const xCause = useOwnDriven
+    ? netCause === 'stub' && drivenVal && dominantState(drivenVal) === BIT_X
+      ? 'stub'
+      : undefined
+    : netCause;
 
   let valStr = 'PAUSED';
   if (simActive && val) {
