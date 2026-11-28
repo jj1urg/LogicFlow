@@ -616,6 +616,7 @@ export const App: React.FC = () => {
         onNewCircuit={() => store.createNewCircuit()}
         onNewHdlCircuit={handleNewHdlCircuit}
         onCloseTab={store.closeCircuitTab}
+        onReorderTabs={store.reorderCircuitTabs}
         onUndo={store.undo}
         onRedo={store.redo}
         onToggleSimMode={() => {

@@ -240,6 +240,7 @@ body,
 }
 
 .circuit-tab {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -251,6 +252,36 @@ body,
   cursor: pointer;
   font-size: 12px;
   font-weight: 500;
+  transition:
+    background 0.12s,
+    border-color 0.12s,
+    opacity 0.12s;
+}
+
+.circuit-tab.dragging-tab {
+  opacity: 0.42;
+  cursor: grabbing;
+}
+
+.circuit-tab.drop-before::before,
+.circuit-tab.drop-after::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  width: 2.5px;
+  border-radius: 2px;
+  background: var(--accent-blue);
+  box-shadow: 0 0 8px rgba(56, 189, 248, 0.85);
+  pointer-events: none;
+}
+
+.circuit-tab.drop-before::before {
+  left: -3px;
+}
+
+.circuit-tab.drop-after::after {
+  right: -3px;
 }
 
 .circuit-tab:hover {

@@ -1,4 +1,4 @@
-import React, { useRef } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   Activity,
   Cpu,
@@ -38,6 +38,7 @@ interface TopBarProps {
   onNewCircuit: () => void;
   onNewHdlCircuit: () => void;
   onCloseTab: (id: string) => void;
+  onReorderTabs: (fromId: string, toId: string, position: 'before' | 'after') => void;
   onUndo: () => void;
   onRedo: () => void;
   onToggleSimMode: () => void;
@@ -73,6 +74,7 @@ export const TopBar: React.FC<TopBarProps> = ({
   onNewCircuit,
   onNewHdlCircuit,
   onCloseTab,
+  onReorderTabs,
   onUndo,
   onRedo,
   onToggleSimMode,
@@ -98,6 +100,11 @@ export const TopBar: React.FC<TopBarProps> = ({
 }) => {
   const openFileRef = useRef<HTMLInputElement>(null);
   const importModRef = useRef<HTMLInputElement>(null);
+  const [dragTabId, setDragTabId] = useState<string | null>(null);
+  const [dropHint, setDropHint] = useState<{
+    targetId: string;
+    position: 'before' | 'after';
+  } | null>(null);
   const { settings } = project;
   const openIds = resolveOpenTabIds(project);
   const circuits = openIds.map((id) => project.circuits[id]);
@@ -300,14 +307,60 @@ export const TopBar: React.FC<TopBarProps> = ({
 
       {/* Circuit Tabs Bar */}
       <div className="topbar-row tabs-bar">
-        <div className="tabs-list">
+        <div
+          className="tabs-list"
+          onDragLeave={(e) => {
+            if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+              setDropHint(null);
+            }
+          }}
+        >
           {circuits.map((c) => {
             const active = c.id === project.activeCircuitId;
+            const isDragging = dragTabId === c.id;
+            const isDropBefore = dropHint?.targetId === c.id && dropHint.position === 'before';
+            const isDropAfter = dropHint?.targetId === c.id && dropHint.position === 'after';
             return (
               <div
                 key={c.id}
-                className={`circuit-tab ${active ? 'active' : ''} ${c.isStub ? 'stub' : ''}`}
+                className={`circuit-tab ${active ? 'active' : ''} ${c.isStub ? 'stub' : ''} ${isDragging ? 'dragging-tab' : ''} ${isDropBefore ? 'drop-before' : ''} ${isDropAfter ? 'drop-after' : ''}`}
+                draggable={circuits.length > 1}
+                onDragStart={(e) => {
+                  e.dataTransfer.setData('application/logicflow-tab', c.id);
+                  e.dataTransfer.effectAllowed = 'move';
+                  setDragTabId(c.id);
+                }}
+                onDragOver={(e) => {
+                  if (!dragTabId || dragTabId === c.id) return;
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = 'move';
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  const position: 'before' | 'after' =
+                    e.clientX < rect.left + rect.width / 2 ? 'before' : 'after';
+                  setDropHint((prev) =>
+                    prev && prev.targetId === c.id && prev.position === position
+                      ? prev
+                      : { targetId: c.id, position },
+                  );
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  const fromId = e.dataTransfer.getData('application/logicflow-tab') || dragTabId;
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  const position: 'before' | 'after' =
+                    e.clientX < rect.left + rect.width / 2 ? 'before' : 'after';
+                  if (fromId && fromId !== c.id) {
+                    onReorderTabs(fromId, c.id, position);
+                  }
+                  setDragTabId(null);
+                  setDropHint(null);
+                }}
+                onDragEnd={() => {
+                  setDragTabId(null);
+                  setDropHint(null);
+                }}
                 onClick={() => onSelectCircuit(c.id)}
+                title={circuits.length > 1 ? `${c.name}（ドラッグでタブの順番を入れ替え）` : c.name}
               >
                 <span className="tab-dot" />
                 <span className="tab-name">{c.name}</span>

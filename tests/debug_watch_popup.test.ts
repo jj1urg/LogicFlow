@@ -18,7 +18,7 @@ import {
 import { importVerilogToCircuits } from '../src/core/hdl';
 import { BIT_0, BIT_1, BIT_X, BIT_Z, fromInt, fromLiteral } from '../src/core/logic4';
 import { createEmptySequentialState, simulateCircuit } from '../src/core/simulator';
-import { closeCircuitTabState, resolveOpenTabIds } from '../src/core/tabs';
+import { closeCircuitTabState, reorderOpenTabIds, resolveOpenTabIds } from '../src/core/tabs';
 import { CircuitDocument, ProjectDocument } from '../src/core/types';
 import { formatAppVersion } from '../src/core/version';
 
@@ -400,5 +400,26 @@ describe('Live Subcircuit Popup & Signal Watch / Waveform Helpers', () => {
     expect(step3.activeCircuitId).toBe('');
     expect(resolveOpenTabIds({ ...p3, openTabIds: step3.openTabIds })).toEqual([]);
     expect(Object.keys(p3.circuits)).toEqual(['c1', 'c2', 'c3', 's1']);
+  });
+
+  it('8. reorders open circuit tabs cleanly before/after target without mutating project', () => {
+    const c1: CircuitDocument = { id: 'c1', name: 'Main', gates: [], wires: [] };
+    const c2: CircuitDocument = { id: 'c2', name: 'Alu', gates: [], wires: [] };
+    const c3: CircuitDocument = { id: 'c3', name: 'Reg', gates: [], wires: [] };
+    const proj = { ...makeProject([c1, c2, c3], 'c1'), openTabIds: ['c1', 'c2', 'c3'] };
+
+    // Move first tab after last tab
+    expect(reorderOpenTabIds(proj, 'c1', 'c3', 'after')).toEqual(['c2', 'c3', 'c1']);
+    // Move first tab before last tab
+    expect(reorderOpenTabIds(proj, 'c1', 'c3', 'before')).toEqual(['c2', 'c1', 'c3']);
+    // Move last tab before first tab
+    expect(reorderOpenTabIds(proj, 'c3', 'c1', 'before')).toEqual(['c3', 'c1', 'c2']);
+    // Move last tab after first tab
+    expect(reorderOpenTabIds(proj, 'c3', 'c1', 'after')).toEqual(['c1', 'c3', 'c2']);
+    // Same tab or unknown ID returns unchanged order
+    expect(reorderOpenTabIds(proj, 'c2', 'c2', 'before')).toEqual(['c1', 'c2', 'c3']);
+    expect(reorderOpenTabIds(proj, 'missing', 'c1', 'before')).toEqual(['c1', 'c2', 'c3']);
+    // Original openTabIds was not mutated
+    expect(proj.openTabIds).toEqual(['c1', 'c2', 'c3']);
   });
 });

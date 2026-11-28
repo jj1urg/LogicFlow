@@ -68,3 +68,27 @@ export function closeCircuitTabState(
     tabHistory: picked.tabHistory,
   };
 }
+
+/**
+ * Reorder open tabs by moving `fromCircuitId` before or after `toCircuitId`.
+ * Returns a new array without mutating `project`.
+ */
+export function reorderOpenTabIds(
+  project: Pick<ProjectDocument, 'openTabIds' | 'circuits'>,
+  fromCircuitId: string,
+  toCircuitId: string,
+  position: 'before' | 'after' = 'before',
+): string[] {
+  const tabs = resolveOpenTabIds(project);
+  if (fromCircuitId === toCircuitId) return tabs;
+  const fromIdx = tabs.indexOf(fromCircuitId);
+  if (fromIdx === -1 || !tabs.includes(toCircuitId)) return tabs;
+
+  const next = tabs.slice();
+  next.splice(fromIdx, 1);
+  const targetIdx = next.indexOf(toCircuitId);
+  if (targetIdx === -1) return tabs;
+  const insertAt = position === 'after' ? targetIdx + 1 : targetIdx;
+  next.splice(insertAt, 0, fromCircuitId);
+  return next;
+}

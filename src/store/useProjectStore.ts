@@ -20,7 +20,12 @@ import {
   RuntimeInputOverride,
   simulateCompiledCircuit,
 } from '../core/simulator';
-import { closeCircuitTabState, pickNextActiveTab, resolveOpenTabIds } from '../core/tabs';
+import {
+  closeCircuitTabState,
+  pickNextActiveTab,
+  reorderOpenTabIds,
+  resolveOpenTabIds,
+} from '../core/tabs';
 import {
   CircuitDocument,
   GateInstance,
@@ -462,6 +467,24 @@ export function useProjectStore() {
     setSelectedGateIds(new Set());
     setSelectedWireIds(new Set());
   }, []);
+
+  /** Reorder open circuit tabs via drag-and-drop */
+  const reorderCircuitTabs = useCallback(
+    (fromCircuitId: string, toCircuitId: string, position: 'before' | 'after' = 'before') => {
+      setProject((prev) => {
+        const curTabs = resolveOpenTabIds(prev);
+        const nextTabs = reorderOpenTabIds(prev, fromCircuitId, toCircuitId, position);
+        if (
+          curTabs.length === nextTabs.length &&
+          curTabs.every((id, idx) => id === nextTabs[idx])
+        ) {
+          return prev;
+        }
+        return { ...prev, openTabIds: nextTabs };
+      });
+    },
+    [],
+  );
 
   const updateSymbolConfig = useCallback(
     (circuitId: string, config: ModuleSymbolConfig) => {
@@ -1389,6 +1412,7 @@ export function useProjectStore() {
     createNewHdlCircuit,
     renameCircuit,
     closeCircuitTab,
+    reorderCircuitTabs,
     updateSymbolConfig,
     addGate,
     moveGates,
