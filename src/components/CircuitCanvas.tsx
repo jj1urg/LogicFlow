@@ -145,6 +145,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
     null,
   );
   const [spacePanning, setSpacePanning] = useState(false);
+  const [touchDraggingGate, setTouchDraggingGate] = useState(false);
   const [dragGhostWorld, setDragGhostWorld] = useState<Point | null>(null);
   const [replaceTargetGateId, setReplaceTargetGateId] = useState<string | null>(null);
 
@@ -1024,8 +1025,45 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
   inputModeRef.current = inputMode;
   const lastTrackpadTsRef = useRef<number>(0);
 
-  // Native non-passive wheel, gesture (Safari), and 2-finger touch handlers scoped strictly to the canvas.
-  // Preventing default here blocks browser page zoom ONLY when pinching/scrolling inside the circuit canvas!
+  // Latest interactive state/handlers for native non-passive touch listeners (avoids stale closures)
+  const touchCtxRef = useRef({
+    circuit,
+    project,
+    editLocked,
+    selectedGateIds,
+    selectedWireIds,
+    wiring,
+    onSelect,
+    onMoveGates,
+    onAddWire,
+    onExtendFloatingWire,
+    onInteractGate,
+    onButtonPress,
+    onOpenSubcircuit,
+    onOpenLiveSubcircuitPopup,
+  });
+  touchCtxRef.current = {
+    circuit,
+    project,
+    editLocked,
+    selectedGateIds,
+    selectedWireIds,
+    wiring,
+    onSelect,
+    onMoveGates,
+    onAddWire,
+    onExtendFloatingWire,
+    onInteractGate,
+    onButtonPress,
+    onOpenSubcircuit,
+    onOpenLiveSubcircuitPopup,
+  };
+
+  // Native non-passive wheel, gesture (Safari), and touch handlers scoped strictly to the canvas.
+  // - 1-finger drag pans the canvas (both on empty space and when swiping immediately over gates)
+  // - Long-press (300ms) on a gate enters gate-move mode so parts can be repositioned cleanly on mobile
+  // - 2-finger touch pinches to zoom and pans simultaneously
+  // - Calling preventDefault() on touchstart also eliminates iOS Safari's full-canvas blue tap flash
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -1116,29 +1154,155 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
       }
     };
 
-    // Two-finger touch pinch & pan support on touchscreens
-    let touchState: { dist: number; cx: number; cy: number } | null = null;
+    // Unified 1-finger (pan / tap / long-press gate drag) & 2-finger (pinch + pan) touch controller
+    let pinchState: { dist: number; cx: number; cy: number } | null = null;
+    let singleTouch: {
+      mode: 'pending' | 'pan' | 'drag-gate';
+      startClientX: number;
+      startClientY: number;
+      lastClientX: number;
+      lastClientY: number;
+      startWorld: Point;
+      pinHit: PinHit | null;
+      floatHit: FloatingWireEndHit | null;
+      gateHit: GateInstance | null;
+      wireHit: WireHit | null;
+      buttonDownId?: string;
+      gateStartPos: Map<string, Point>;
+      movedGate: boolean;
+      lastGateMoveSig: string;
+      holdTimer: number | null;
+    } | null = null;
+    let lastTapInfo: { ts: number; gateId: string } | null = null;
+
+    const clearSingleHoldTimer = () => {
+      if (singleTouch?.holdTimer != null) {
+        window.clearTimeout(singleTouch.holdTimer);
+        singleTouch.holdTimer = null;
+      }
+    };
+
+    const cancelSingleTouch = () => {
+      clearSingleHoldTimer();
+      if (singleTouch?.buttonDownId) {
+        touchCtxRef.current.onButtonPress(singleTouch.buttonDownId, false);
+      }
+      if (singleTouch?.mode === 'drag-gate') {
+        setTouchDraggingGate(false);
+      }
+      singleTouch = null;
+    };
+
+    const clientToWorld = (clientX: number, clientY: number): Point => {
+      const rect = canvas.getBoundingClientRect();
+      return screenToWorld({ x: clientX - rect.left, y: clientY - rect.top }, vpStateRef.current);
+    };
+
     const onTouchStart = (e: TouchEvent) => {
+      // Prevent iOS Safari full-canvas blue tap flash, text/image callout, and page pull-to-refresh
+      e.preventDefault();
+
       if (e.touches.length === 2) {
-        e.preventDefault();
+        cancelSingleTouch();
         const [t1, t2] = [e.touches[0], e.touches[1]];
-        touchState = {
+        pinchState = {
           dist: Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY),
           cx: (t1.clientX + t2.clientX) / 2,
           cy: (t1.clientY + t2.clientY) / 2,
         };
+        return;
+      }
+
+      if (e.touches.length === 1) {
+        pinchState = null;
+        const t = e.touches[0];
+        const ctx = touchCtxRef.current;
+        const curZoom = vpStateRef.current.zoom;
+        const worldPt = clientToWorld(t.clientX, t.clientY);
+
+        const pinHit = !ctx.editLocked
+          ? hitTestPin(worldPt, ctx.circuit, ctx.project, 18 / curZoom)
+          : null;
+        const floatHit =
+          !ctx.editLocked && !pinHit
+            ? hitTestFloatingWireEnd(
+                worldPt,
+                ctx.circuit,
+                ctx.project,
+                18 / curZoom,
+                ctx.wiring?.extendingWire?.wireId,
+              )
+            : null;
+        const gateHit =
+          !pinHit && !floatHit ? hitTestGate(worldPt, ctx.circuit, ctx.project) : null;
+        const wireHit =
+          !pinHit && !floatHit && !gateHit ? hitTestWire(worldPt, ctx.circuit, 14 / curZoom) : null;
+
+        let buttonDownId: string | undefined;
+        if (gateHit && gateHit.type === 'BUTTON') {
+          buttonDownId = gateHit.id;
+          ctx.onButtonPress(gateHit.id, true);
+        }
+
+        const st = {
+          mode: 'pending' as 'pending' | 'pan' | 'drag-gate',
+          startClientX: t.clientX,
+          startClientY: t.clientY,
+          lastClientX: t.clientX,
+          lastClientY: t.clientY,
+          startWorld: worldPt,
+          pinHit,
+          floatHit,
+          gateHit,
+          wireHit,
+          buttonDownId,
+          gateStartPos: new Map<string, Point>(),
+          movedGate: false,
+          lastGateMoveSig: '',
+          holdTimer: null as number | null,
+        };
+        singleTouch = st;
+
+        // Long-press (300ms) on a gate enters gate-drag mode on smartphones!
+        if (gateHit && !ctx.editLocked && !ctx.wiring) {
+          st.holdTimer = window.setTimeout(() => {
+            if (singleTouch !== st || st.mode !== 'pending') return;
+            st.holdTimer = null;
+            st.mode = 'drag-gate';
+            if (st.buttonDownId) {
+              touchCtxRef.current.onButtonPress(st.buttonDownId, false);
+              st.buttonDownId = undefined;
+            }
+            const cur = touchCtxRef.current;
+            const nextSel = cur.selectedGateIds.has(gateHit.id)
+              ? new Set(cur.selectedGateIds)
+              : new Set([gateHit.id]);
+            cur.onSelect(nextSel, new Set());
+            st.gateStartPos = new Map();
+            for (const g of cur.circuit.gates) {
+              if (nextSel.has(g.id)) st.gateStartPos.set(g.id, { x: g.x, y: g.y });
+            }
+            setTouchDraggingGate(true);
+            try {
+              navigator.vibrate?.(18);
+            } catch {
+              // ignore unsupported vibration
+            }
+          }, 300);
+        }
       }
     };
+
     const onTouchMove = (e: TouchEvent) => {
-      if (e.touches.length === 2 && touchState) {
+      if (e.touches.length === 2 && pinchState) {
         e.preventDefault();
         const [t1, t2] = [e.touches[0], e.touches[1]];
         const dist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
         const cx = (t1.clientX + t2.clientX) / 2;
         const cy = (t1.clientY + t2.clientY) / 2;
-        const panDx = cx - touchState.cx;
-        const panDy = cy - touchState.cy;
-        const factor = touchState.dist > 1 ? dist / touchState.dist : 1;
+        const panDx = cx - pinchState.cx;
+        const panDy = cy - pinchState.cy;
+        const factor = pinchState.dist > 1 ? dist / pinchState.dist : 1;
         const rect = canvas.getBoundingClientRect();
         const sx = cx - rect.left;
         const sy = cy - rect.top;
@@ -1150,11 +1314,271 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
           const wy = (sy - movedY) / prev.zoom;
           return { zoom: newZoom, x: sx - wx * newZoom, y: sy - wy * newZoom };
         });
-        touchState = { dist, cx, cy };
+        pinchState = { dist, cx, cy };
+        return;
+      }
+
+      if (e.touches.length === 1 && singleTouch) {
+        e.preventDefault();
+        const t = e.touches[0];
+        const dxTotal = t.clientX - singleTouch.startClientX;
+        const dyTotal = t.clientY - singleTouch.startClientY;
+
+        if (singleTouch.mode === 'pending') {
+          if (Math.hypot(dxTotal, dyTotal) > 8) {
+            clearSingleHoldTimer();
+            if (singleTouch.buttonDownId) {
+              touchCtxRef.current.onButtonPress(singleTouch.buttonDownId, false);
+              singleTouch.buttonDownId = undefined;
+            }
+            singleTouch.mode = 'pan';
+          }
+        }
+
+        if (singleTouch.mode === 'pan') {
+          const stepDx = t.clientX - singleTouch.lastClientX;
+          const stepDy = t.clientY - singleTouch.lastClientY;
+          if (stepDx !== 0 || stepDy !== 0) {
+            scheduleVpUpdate((prev) => ({
+              ...prev,
+              x: prev.x + stepDx,
+              y: prev.y + stepDy,
+            }));
+          }
+        } else if (singleTouch.mode === 'drag-gate') {
+          const cur = touchCtxRef.current;
+          const worldPt = clientToWorld(t.clientX, t.clientY);
+          const dx = worldPt.x - singleTouch.startWorld.x;
+          const dy = worldPt.y - singleTouch.startWorld.y;
+          const gs = cur.project.settings.gridSize;
+          const snap = cur.project.settings.routeMode === 'grid';
+          const positions = new Map<string, Point>();
+          let sig = '';
+          for (const [gid, orig] of singleTouch.gateStartPos.entries()) {
+            const nx = snap ? snapToGrid(orig.x + dx, gs) : Math.round(orig.x + dx);
+            const ny = snap ? snapToGrid(orig.y + dy, gs) : Math.round(orig.y + dy);
+            positions.set(gid, { x: nx, y: ny });
+            sig += `${gid}:${nx},${ny};`;
+          }
+          if (sig !== singleTouch.lastGateMoveSig && positions.size > 0) {
+            singleTouch.lastGateMoveSig = sig;
+            cur.onMoveGates(positions, !singleTouch.movedGate);
+            singleTouch.movedGate = true;
+          }
+        }
+
+        singleTouch.lastClientX = t.clientX;
+        singleTouch.lastClientY = t.clientY;
       }
     };
+
     const onTouchEnd = (e: TouchEvent) => {
-      if (e.touches.length < 2) touchState = null;
+      if (pinchState && e.touches.length === 1) {
+        // Transition smoothly from 2-finger pinch to 1-finger pan without jumping
+        pinchState = null;
+        const rem = e.touches[0];
+        singleTouch = {
+          mode: 'pan',
+          startClientX: rem.clientX,
+          startClientY: rem.clientY,
+          lastClientX: rem.clientX,
+          lastClientY: rem.clientY,
+          startWorld: clientToWorld(rem.clientX, rem.clientY),
+          pinHit: null,
+          floatHit: null,
+          gateHit: null,
+          wireHit: null,
+          gateStartPos: new Map(),
+          movedGate: false,
+          lastGateMoveSig: '',
+          holdTimer: null,
+        };
+        return;
+      }
+
+      if (e.touches.length < 2) pinchState = null;
+      if (e.touches.length > 0) return;
+
+      const st = singleTouch;
+      if (!st) return;
+      clearSingleHoldTimer();
+      singleTouch = null;
+
+      const cur = touchCtxRef.current;
+      if (st.buttonDownId) {
+        cur.onButtonPress(st.buttonDownId, false);
+      }
+
+      if (st.mode === 'drag-gate') {
+        setTouchDraggingGate(false);
+        return;
+      }
+
+      if (st.mode !== 'pending') return;
+
+      // --- Quick single-finger TAP handling ---
+      if (st.pinHit && !cur.editLocked) {
+        const pinHit = st.pinHit;
+        if (!cur.wiring) {
+          setWiring({
+            startPt: pinHit.pos,
+            fromPin: { gateId: pinHit.gate.id, pinId: pinHit.pin.id },
+            startSide: getPinWorldSide(pinHit.pin.side, pinHit.gate.rotation),
+            waypoints: [],
+          });
+        } else if (cur.wiring.extendingWire) {
+          const endSide = getPinWorldSide(pinHit.pin.side, pinHit.gate.rotation);
+          const customPts =
+            cur.project.settings.routeMode === 'free'
+              ? simplifyPolyline([cur.wiring.startPt, ...cur.wiring.waypoints, pinHit.pos])
+              : undefined;
+          cur.onExtendFloatingWire(
+            cur.wiring.extendingWire.wireId,
+            cur.wiring.extendingWire.end,
+            pinHit.pos,
+            { gateId: pinHit.gate.id, pinId: pinHit.pin.id },
+            endSide,
+            customPts,
+          );
+          setWiring(null);
+        } else {
+          const samePin =
+            cur.wiring.fromPin &&
+            cur.wiring.fromPin.gateId === pinHit.gate.id &&
+            cur.wiring.fromPin.pinId === pinHit.pin.id;
+          if (!samePin) {
+            const endSide = getPinWorldSide(pinHit.pin.side, pinHit.gate.rotation);
+            const customPts =
+              cur.project.settings.routeMode === 'free'
+                ? simplifyPolyline([cur.wiring.startPt, ...cur.wiring.waypoints, pinHit.pos])
+                : undefined;
+            cur.onAddWire(
+              cur.wiring.startPt,
+              pinHit.pos,
+              cur.wiring.fromPin,
+              { gateId: pinHit.gate.id, pinId: pinHit.pin.id },
+              cur.wiring.startSide,
+              endSide,
+              customPts,
+            );
+          }
+          setWiring(null);
+        }
+        return;
+      }
+
+      if (st.floatHit && !cur.editLocked) {
+        const floatHit = st.floatHit;
+        if (!cur.wiring) {
+          setWiring({
+            startPt: floatHit.pos,
+            startSide: inferWireEndOutwardSide(floatHit.wire.points, floatHit.end),
+            extendingWire: { wireId: floatHit.wire.id, end: floatHit.end },
+            waypoints: [],
+          });
+        } else if (cur.wiring.extendingWire) {
+          const endSide = inferWireEndOutwardSide(floatHit.wire.points, floatHit.end);
+          cur.onExtendFloatingWire(
+            cur.wiring.extendingWire.wireId,
+            cur.wiring.extendingWire.end,
+            floatHit.pos,
+            undefined,
+            endSide,
+            undefined,
+            { wireId: floatHit.wire.id, end: floatHit.end },
+          );
+          setWiring(null);
+        } else {
+          cur.onExtendFloatingWire(
+            floatHit.wire.id,
+            floatHit.end,
+            cur.wiring.startPt,
+            cur.wiring.fromPin,
+            cur.wiring.startSide,
+          );
+          setWiring(null);
+        }
+        return;
+      }
+
+      if (cur.wiring) {
+        if (st.wireHit && st.wireHit.wire.id !== cur.wiring.extendingWire?.wireId) {
+          const a = st.wireHit.wire.points[st.wireHit.segIndex];
+          const b = st.wireHit.wire.points[st.wireHit.segIndex + 1];
+          const proj = projectPointToSegment(st.startWorld, a, b);
+          const snapPt =
+            cur.project.settings.routeMode === 'grid'
+              ? {
+                  x: snapToGrid(proj.x, cur.project.settings.gridSize),
+                  y: snapToGrid(proj.y, cur.project.settings.gridSize),
+                }
+              : proj;
+          if (cur.wiring.extendingWire) {
+            cur.onExtendFloatingWire(
+              cur.wiring.extendingWire.wireId,
+              cur.wiring.extendingWire.end,
+              snapPt,
+            );
+          } else {
+            cur.onAddWire(
+              cur.wiring.startPt,
+              snapPt,
+              cur.wiring.fromPin,
+              undefined,
+              cur.wiring.startSide,
+            );
+          }
+          setWiring(null);
+          return;
+        }
+        if (cur.project.settings.routeMode === 'free') {
+          setWiring((prev) =>
+            prev ? { ...prev, waypoints: [...prev.waypoints, st.startWorld] } : null,
+          );
+        } else {
+          setWiring(null);
+        }
+        return;
+      }
+
+      if (st.gateHit) {
+        const g = st.gateHit;
+        const now = performance.now();
+        if (
+          g.type === 'SUBCIRCUIT' &&
+          g.props.subcircuitId &&
+          lastTapInfo &&
+          lastTapInfo.gateId === g.id &&
+          now - lastTapInfo.ts < 340
+        ) {
+          lastTapInfo = null;
+          const subDoc = cur.project.circuits[g.props.subcircuitId];
+          if (subDoc && !subDoc.isStub) {
+            cur.onOpenLiveSubcircuitPopup(g.id);
+          } else {
+            cur.onOpenSubcircuit(g.props.subcircuitId);
+          }
+          return;
+        }
+        lastTapInfo = { ts: now, gateId: g.id };
+        cur.onSelect(new Set([g.id]), new Set());
+        if (g.type !== 'BUTTON') {
+          cur.onInteractGate(g);
+        }
+        return;
+      }
+
+      if (st.wireHit) {
+        cur.onSelect(new Set(), new Set([st.wireHit.wire.id]));
+        return;
+      }
+
+      cur.onSelect(new Set(), new Set());
+    };
+
+    const onTouchCancel = () => {
+      pinchState = null;
+      cancelSingleTouch();
     };
 
     canvas.addEventListener('wheel', onWheel, { passive: false });
@@ -1163,14 +1587,17 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
     canvas.addEventListener('touchstart', onTouchStart, { passive: false });
     canvas.addEventListener('touchmove', onTouchMove, { passive: false });
     canvas.addEventListener('touchend', onTouchEnd);
+    canvas.addEventListener('touchcancel', onTouchCancel);
 
     return () => {
+      cancelSingleTouch();
       canvas.removeEventListener('wheel', onWheel);
       canvas.removeEventListener('gesturestart', onGestureStart);
       canvas.removeEventListener('gesturechange', onGestureChange);
       canvas.removeEventListener('touchstart', onTouchStart);
       canvas.removeEventListener('touchmove', onTouchMove);
       canvas.removeEventListener('touchend', onTouchEnd);
+      canvas.removeEventListener('touchcancel', onTouchCancel);
     };
   }, [scheduleVpUpdate]);
 
@@ -1264,6 +1691,11 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
         onDoubleClick={handleDoubleClick}
         onContextMenu={handleContextMenu}
       />
+
+      {/* Touch Long-Press Gate Drag Banner */}
+      {touchDraggingGate && (
+        <div className="wiring-banner">パーツを移動中 — 指を離すと位置を確定します</div>
+      )}
 
       {/* Wiring Mode Banner */}
       {wiring && (

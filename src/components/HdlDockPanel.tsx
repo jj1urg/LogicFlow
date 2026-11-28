@@ -616,10 +616,16 @@ export const HdlDockPanel: React.FC<HdlDockPanelProps> = ({
           >
             {dock === 'bottom' ? <PanelRight size={14} /> : <PanelBottom size={14} />}
           </button>
-          <button className="icon-btn" onClick={onClose} title="HDLソースパネルを閉じる">
-            <X size={14} />
-          </button>
         </div>
+
+        <button
+          className="icon-btn hdl-close-btn"
+          onClick={onClose}
+          title="HDLソースパネルを閉じる"
+          aria-label="HDLソースパネルを閉じる"
+        >
+          <X size={14} />
+        </button>
       </div>
 
       {/* Unified HDL Project multi-file bar + Top Module selector */}

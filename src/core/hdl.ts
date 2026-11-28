@@ -4106,6 +4106,11 @@ export function importVerilogFilesToCircuits(
     }
 
     // 4. Place submodule instances (defined & external stubs)
+    const declaredInParent = new Set<string>([
+      ...pm.ports.map((p) => p.name),
+      ...pm.wires.keys(),
+      ...pm.params.keys(),
+    ]);
     for (const inst of pm.instances) {
       const targetId = nameToId.get(inst.moduleName);
       if (!targetId) continue;
@@ -4127,8 +4132,32 @@ export function importVerilogFilesToCircuits(
       const pins = getGatePins(gate, tempProject);
       inst.conns.forEach((conn, cIdx) => {
         const pin = conn.portName ? pins.find((p) => p.name === conn.portName) : pins[cIdx];
-        if (!pin) return;
+        if (!pin) {
+          const msg = conn.portName
+            ? `[${pm.name}] インスタンス "${inst.instName}" (${inst.moduleName}) に存在しないポート ".${conn.portName}" が指定されています`
+            : `[${pm.name}] インスタンス "${inst.instName}" (${inst.moduleName}) の位置指定ポート #${cIdx + 1} が定義ポート数 (${pins.length}) を超えています`;
+          warnOnce(ctx, `inst-bad-port:${inst.instName}:${conn.portName ?? cIdx}`, msg);
+          return;
+        }
         const sigTrim = conn.signal.trim();
+        if (!sigTrim) return;
+
+        // Warn when an instantiated port connects to a signal identifier not declared in the parent module
+        const sigNoLit = sigTrim
+          .replace(/\b\d+'s?[bhdoBHDO][0-9a-fA-FxXzZ_?]+\b/g, ' ')
+          .replace(/'[01xXzZ]\b/g, ' ')
+          .replace(/\$\w+/g, ' ');
+        for (const idM of sigNoLit.matchAll(/\b([a-zA-Z_]\w*)\b/g)) {
+          const id = idM[1];
+          if (KEYWORDS.has(id) || declaredInParent.has(id)) continue;
+          if (idM.index > 0 && sigNoLit[idM.index - 1] === '.') continue;
+          warnOnce(
+            ctx,
+            `inst-undecl-sig:${inst.instName}:${pin.name}:${id}`,
+            `[${pm.name}] インスタンス "${inst.instName}" (${inst.moduleName}) のポート ".${pin.name}" に未宣言の信号 "${id}" が接続されています`,
+          );
+        }
+
         if (pin.dir === 'out') {
           const outSlice = parseSliceExpr(sigTrim, pm.params);
           if (outSlice) {

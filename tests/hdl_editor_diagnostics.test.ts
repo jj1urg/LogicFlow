@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { importVerilogToCircuits } from '../src/core/hdl';
 import { validateHdlSource } from '../src/core/hdlDiagnostics';
 import {
   copyCurrentLine,
@@ -158,5 +159,21 @@ describe('HDL Static Syntax Diagnostics Validator', () => {
         [],
       );
     }
+  });
+
+  it('7. warns during synthesis when module instantiation connects undeclared signals or nonexistent ports', () => {
+    const src = [
+      'module sub_and (input logic a, input logic b, output logic y);',
+      '  assign y = a & b;',
+      'endmodule',
+      '',
+      'module top_mod (input logic in_a, output logic out_y);',
+      '  sub_and u1 (.a(in_a), .b(missing_sig), .y(out_y), .ghost_port(in_a));',
+      'endmodule',
+    ].join('\n');
+
+    const res = importVerilogToCircuits(src);
+    expect(res.warnings.some((w) => w.includes('missing_sig') && w.includes('.b'))).toBe(true);
+    expect(res.warnings.some((w) => w.includes('.ghost_port') && w.includes('u1'))).toBe(true);
   });
 });

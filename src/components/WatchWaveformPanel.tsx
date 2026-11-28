@@ -526,11 +526,16 @@ export const WatchWaveformPanel: React.FC<WatchWaveformPanelProps> = ({
               </button>
             ))}
           </div>
-
-          <button className="icon-btn" onClick={onClose} title="ウォッチパネルを閉じる">
-            <X size={14} />
-          </button>
         </div>
+
+        <button
+          className="icon-btn watch-close-btn"
+          onClick={onClose}
+          title="ウォッチパネルを閉じる"
+          aria-label="ウォッチパネルを閉じる"
+        >
+          <X size={14} />
+        </button>
       </div>
 
       {/* Main Split Body */}
