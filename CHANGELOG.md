@@ -6,6 +6,20 @@
 
 ---
 
+## 2026-11-28 — v0.17-r1.0 高コントラスト透過ファビコン刷新・サイドバー開閉時のCanvas引き伸ばし解消・フローティング開閉ボタン化
+
+### 実施内容
+
+1. **高コントラスト透過ファビコン＆アプリアイコン刷新** (`public/favicon.svg`, `public/favicon-32.png`, `public/icon-192.png`, `public/icon-512.png`, `public/apple-touch-icon.png`, `index.html`, `public/sw.js`):
+   - `<link rel="icon">` 用の `favicon.svg` および新設の `favicon-32.png` を背景透過・太線シルエット＋暗色エッジ＋鮮明なシアン／発光グリーン・ホワイト波形の超高コントラスト設計へ刷新し、ライト／ダークどちらのブラウザタブでも 16×16px でくっきり視認できるようにしました。
+   - PWA / ホーム画面アイコン (`icon-192.png`, `icon-512.png`, `apple-touch-icon.png`) も同じく高コントラストなシャープ造形へ更新し、Service Worker のキャッシュ名を `logicflow-static-v0.17-r1` へ更新しました。
+2. **インスペクタ等サイドバー開閉アニメーション時の Canvas 引き伸ばし解消** (`src/components/CircuitCanvas.tsx`, `src/styles.css`):
+   - `.circuit-canvas` の `width: 100%; height: 100%` による CSS スケーリングと `ResizeObserver` 経由の非同期 React 再描画による 1 フレーム遅延が原因で、インスペクタ開閉アニメーション中に回路描画が横方向へ引き伸ばされて見えていた不具合を修正しました。
+   - `.circuit-canvas` を絶対配置＋JS による実ピクセル CSS サイズ同期（`canvas.width / dpr === style.width` を常に保証）とし、`ResizeObserver` 内でペイント前に同期再描画 (`drawCanvasNow`) する方式へ変更。あわせてデスクトップ版 `.sidebar-slot` の開閉時の隙間 (`transform` 重複) も解消しました。
+3. **サイドバー開閉ボタンを各パネルヘッダ＆キャンバス上フローティング配置へ移動** (`src/components/TopBar.tsx`, `src/components/ComponentPalette.tsx`, `src/components/InspectorPanel.tsx`, `src/App.tsx`, `src/styles.css`):
+   - 上部ツールバー左右のサイドバー切替ボタンを撤去し、左コンポーネントパレット／右インスペクタのヘッダ内（従来の `×` ボタン位置）へ移設しました。
+   - サイドバーが非表示のときは、キャンバス左上／右上に半透明ガラス調のフローティング表示ボタンが滑らかに現れるようにしました。
+
 ## 2026-11-28 — v0.17-r0.0 Web メタ・アイコン/OGP・PWA 対応・左上バージョン表記・新規 HDL モジュール作成・スマホ対応＆サイドバー/ポップアップアニメーション
 
 ### 実施内容

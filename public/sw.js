@@ -2,12 +2,13 @@
 // - Network-first for HTML navigations so Cloudflare Workers deploys update immediately
 // - Stale-while-revalidate for same-origin static assets for instant offline startup
 
-const CACHE_NAME = 'logicflow-static-v0.17';
+const CACHE_NAME = 'logicflow-static-v0.17-r1';
 const PRECACHE_URLS = [
   '/',
   '/index.html',
   '/manifest.webmanifest',
   '/favicon.svg',
+  '/favicon-32.png',
   '/icon-192.png',
 ];
 

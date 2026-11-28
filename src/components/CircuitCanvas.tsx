@@ -375,58 +375,113 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
     });
   }, [wiring, hoveredPin, hoveredFloatingEnd, cursorWorld, circuit, project]);
 
-  // Resize observer so canvas fills window & dock panels smoothly and redraws immediately
-  const [resizeTick, setResizeTick] = useState(0);
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    const bump = () => setResizeTick((t) => t + 1);
-    const obs = new ResizeObserver(bump);
-    obs.observe(el);
-    window.addEventListener('resize', bump);
-    return () => {
-      obs.disconnect();
-      window.removeEventListener('resize', bump);
-    };
-  }, []);
+  // Keep latest render parameters in a ref so ResizeObserver can repaint synchronously
+  // BEFORE browser paint (eliminates 1-frame stretching during sidebar slide animations).
+  const renderParamsRef = useRef({
+    vp,
+    circuit,
+    project,
+    snapshot,
+    selectedGateIds,
+    selectedWireIds,
+    hoveredPin,
+    hoveredFloatingEnd,
+    hoveredGateId,
+    hoveredWire,
+    hoveredWireHandle,
+    wiringPreview,
+    marquee,
+    simActive,
+    runtimeInputs,
+    ghostGate: replaceTarget ? null : ghostGate,
+    replaceTarget,
+  });
+  renderParamsRef.current = {
+    vp,
+    circuit,
+    project,
+    snapshot,
+    selectedGateIds,
+    selectedWireIds,
+    hoveredPin,
+    hoveredFloatingEnd,
+    hoveredGateId,
+    hoveredWire,
+    hoveredWireHandle,
+    wiringPreview,
+    marquee,
+    simActive,
+    runtimeInputs,
+    ghostGate: replaceTarget ? null : ghostGate,
+    replaceTarget,
+  };
 
-  // Main Canvas Render Effect
-  useEffect(() => {
+  const drawCanvasNow = useCallback(() => {
     const canvas = canvasRef.current;
     const container = containerRef.current;
     if (!canvas || !container) return;
 
     const dpr = window.devicePixelRatio || 1;
     const rect = container.getBoundingClientRect();
-    const w = Math.max(1, Math.floor(rect.width));
-    const h = Math.max(1, Math.floor(rect.height));
+    const w = Math.max(1, Math.ceil(rect.width));
+    const h = Math.max(1, Math.ceil(rect.height));
+    const targetW = Math.round(w * dpr);
+    const targetH = Math.round(h * dpr);
 
-    if (canvas.width !== Math.floor(w * dpr) || canvas.height !== Math.floor(h * dpr)) {
-      canvas.width = Math.floor(w * dpr);
-      canvas.height = Math.floor(h * dpr);
+    // Explicitly lock CSS px size to backing store size / dpr so CSS never stretches the bitmap
+    if (canvas.width !== targetW || canvas.height !== targetH) {
+      canvas.width = targetW;
+      canvas.height = targetH;
+      canvas.style.width = `${w}px`;
+      canvas.style.height = `${h}px`;
+    } else if (canvas.style.width !== `${w}px` || canvas.style.height !== `${h}px`) {
+      canvas.style.width = `${w}px`;
+      canvas.style.height = `${h}px`;
     }
 
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    renderCanvas(ctx, w, h, circuit, project, snapshot, {
-      viewport: vp,
-      selectedGateIds,
-      selectedWireIds,
-      hoveredPin,
-      hoveredFloatingEnd,
-      hoveredGateId,
-      hoveredWire,
-      hoveredWireHandle,
-      wiringPreview,
-      marquee,
-      simActive,
-      runtimeInputs,
-      ghostGate: replaceTarget ? null : ghostGate,
-      replaceTarget,
+    const p = renderParamsRef.current;
+    renderCanvas(ctx, w, h, p.circuit, p.project, p.snapshot, {
+      viewport: p.vp,
+      selectedGateIds: p.selectedGateIds,
+      selectedWireIds: p.selectedWireIds,
+      hoveredPin: p.hoveredPin,
+      hoveredFloatingEnd: p.hoveredFloatingEnd,
+      hoveredGateId: p.hoveredGateId,
+      hoveredWire: p.hoveredWire,
+      hoveredWireHandle: p.hoveredWireHandle,
+      wiringPreview: p.wiringPreview,
+      marquee: p.marquee,
+      simActive: p.simActive,
+      runtimeInputs: p.runtimeInputs,
+      ghostGate: p.ghostGate,
+      replaceTarget: p.replaceTarget,
     });
+  }, []);
+
+  // Resize observer repaints synchronously before paint so sidebar transitions never stretch canvas
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const obs = new ResizeObserver(() => {
+      drawCanvasNow();
+    });
+    obs.observe(el);
+    window.addEventListener('resize', drawCanvasNow);
+    return () => {
+      obs.disconnect();
+      window.removeEventListener('resize', drawCanvasNow);
+    };
+  }, [drawCanvasNow]);
+
+  // Main Canvas Render Effect
+  useEffect(() => {
+    drawCanvasNow();
   }, [
+    drawCanvasNow,
     vp,
     circuit,
     project,
@@ -444,7 +499,6 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
     runtimeInputs,
     ghostGate,
     replaceTarget,
-    resizeTick,
   ]);
 
   const getLocalScreenPt = (clientX: number, clientY: number): Point => {

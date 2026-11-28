@@ -6,6 +6,7 @@ import {
   Database,
   ExternalLink,
   FileCode2,
+  PanelRight,
   Plus,
   RefreshCw,
   RotateCw,
@@ -138,10 +139,10 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
             <button
               className="icon-btn panel-close-btn"
               onClick={onCloseSidebar}
-              title="サイドバーを閉じる"
-              aria-label="インスペクタを閉じる"
+              title="右インスペクタを隠す"
+              aria-label="右インスペクタを隠す"
             >
-              <X size={14} />
+              <PanelRight size={15} />
             </button>
           )}
         </div>

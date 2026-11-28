@@ -9,8 +9,6 @@ import {
   GitBranch,
   Grid,
   HelpCircle,
-  PanelLeft,
-  PanelRight,
   Pause,
   Play,
   Plus,
@@ -39,10 +37,6 @@ interface TopBarProps {
   onNewCircuit: () => void;
   onNewHdlCircuit: () => void;
   onDeleteCircuit: (id: string) => void;
-  leftSidebarOpen: boolean;
-  rightSidebarOpen: boolean;
-  onToggleLeftSidebar: () => void;
-  onToggleRightSidebar: () => void;
   onUndo: () => void;
   onRedo: () => void;
   onToggleSimMode: () => void;
@@ -78,10 +72,6 @@ export const TopBar: React.FC<TopBarProps> = ({
   onNewCircuit,
   onNewHdlCircuit,
   onDeleteCircuit,
-  leftSidebarOpen,
-  rightSidebarOpen,
-  onToggleLeftSidebar,
-  onToggleRightSidebar,
   onUndo,
   onRedo,
   onToggleSimMode,
@@ -120,14 +110,6 @@ export const TopBar: React.FC<TopBarProps> = ({
       <div className="topbar-row main-toolbar">
         {/* Brand + Project Name */}
         <div className="toolbar-group brand-group">
-          <button
-            className={`icon-btn sidebar-toggle-btn ${leftSidebarOpen ? 'active-blue' : ''}`}
-            onClick={onToggleLeftSidebar}
-            title={leftSidebarOpen ? '左パーツパレットを隠す' : '左パーツパレットを表示'}
-            aria-label="左パーツパレット切替"
-          >
-            <PanelLeft size={15} />
-          </button>
           <div className="brand-logo" title={`LogicFlow ${APP_VERSION.full}`}>
             <Cpu size={18} className="accent-green" />
             <span>LogicFlow</span>
@@ -287,14 +269,6 @@ export const TopBar: React.FC<TopBarProps> = ({
           </button>
           <button className="icon-btn" onClick={onOpenShortcuts} title="ショートカット一覧 (?)">
             <HelpCircle size={15} />
-          </button>
-          <button
-            className={`icon-btn sidebar-toggle-btn ${rightSidebarOpen ? 'active-blue' : ''}`}
-            onClick={onToggleRightSidebar}
-            title={rightSidebarOpen ? '右インスペクタを隠す' : '右インスペクタを表示'}
-            aria-label="右インスペクタ切替"
-          >
-            <PanelRight size={15} />
           </button>
 
           <input

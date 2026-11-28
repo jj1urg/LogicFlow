@@ -560,8 +560,9 @@ body,
 }
 
 .circuit-canvas {
-  width: 100%;
-  height: 100%;
+  position: absolute;
+  top: 0;
+  left: 0;
   display: block;
   touch-action: none;
 }
@@ -592,6 +593,7 @@ body,
   top: 10px;
   left: 50%;
   transform: translateX(-50%);
+  max-width: calc(100% - 104px);
   padding: 6px 14px;
   border-radius: 999px;
   font-size: 12px;
@@ -2001,12 +2003,68 @@ body,
 
 /* --- Workspace Canvas Column Wrapper (allows Watch Dock below Canvas alongside right HDL Dock) --- */
 .workspace-canvas-col {
+  position: relative;
   flex: 1;
   min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+/* Floating sidebar restore toggles on the canvas when sidebars are collapsed */
+.canvas-floating-toggle {
+  position: absolute;
+  top: 10px;
+  z-index: 15;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  justify-content: center;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.9);
+  border: 1px solid var(--border-strong);
+  color: var(--text-main);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.48);
+  transition:
+    opacity 180ms ease,
+    transform 200ms cubic-bezier(0.22, 1, 0.36, 1),
+    background 0.12s,
+    border-color 0.12s,
+    color 0.12s;
+}
+
+.canvas-floating-toggle:hover {
+  background: rgba(30, 41, 59, 0.96);
+  border-color: var(--accent-blue);
+  color: #bae6fd;
+}
+
+.canvas-floating-left {
+  left: 10px;
+}
+
+.canvas-floating-right {
+  right: 10px;
+}
+
+.canvas-floating-toggle.is-visible {
+  opacity: 1;
+  transform: translateX(0);
+  pointer-events: auto;
+}
+
+.canvas-floating-left.is-hidden {
+  opacity: 0;
+  transform: translateX(-10px);
+  pointer-events: none;
+}
+
+.canvas-floating-right.is-hidden {
+  opacity: 0;
+  transform: translateX(10px);
+  pointer-events: none;
 }
 
 .mini-btn.active-watch {
@@ -2545,8 +2603,10 @@ body,
 }
 
 .panel-close-btn {
-  width: 24px;
-  height: 24px;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  justify-content: center;
 }
 
 /* --- Live Subcircuit Popup Zoom-In / Zoom-Out Animation --- */
@@ -2579,33 +2639,36 @@ body,
   display: flex;
   overflow: hidden;
   transition:
-    width 260ms cubic-bezier(0.22, 1, 0.36, 1),
-    transform 260ms cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 200ms ease;
+    width 240ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 180ms ease;
+}
+
+.sidebar-slot.sidebar-left {
+  justify-content: flex-end;
+}
+
+.sidebar-slot.sidebar-right {
+  justify-content: flex-start;
 }
 
 .sidebar-slot.sidebar-left.open {
   width: 248px;
-  transform: translateX(0);
   opacity: 1;
 }
 
 .sidebar-slot.sidebar-left.closed {
   width: 0;
-  transform: translateX(-100%);
   opacity: 0;
   pointer-events: none;
 }
 
 .sidebar-slot.sidebar-right.open {
   width: 272px;
-  transform: translateX(0);
   opacity: 1;
 }
 
 .sidebar-slot.sidebar-right.closed {
   width: 0;
-  transform: translateX(100%);
   opacity: 0;
   pointer-events: none;
 }
@@ -2678,6 +2741,9 @@ body,
     bottom: 0;
     z-index: 45;
     box-shadow: 0 18px 42px rgba(0, 0, 0, 0.72);
+    transition:
+      transform 240ms cubic-bezier(0.22, 1, 0.36, 1),
+      opacity 180ms ease;
   }
 
   .sidebar-slot.sidebar-left {

@@ -8,10 +8,10 @@ import {
   GitFork,
   Layers,
   List,
+  PanelLeft,
   Search,
   Star,
   Trash2,
-  X,
 } from 'lucide-react';
 import { CATEGORY_LABELS, GATE_CATALOG } from '../core/catalog';
 import { buildHdlModuleTree, HdlModuleTreeNode } from '../core/hdl';
@@ -430,10 +430,10 @@ export const ComponentPalette: React.FC<ComponentPaletteProps> = ({
             <button
               className="icon-btn panel-close-btn"
               onClick={onCloseSidebar}
-              title="サイドバーを閉じる"
-              aria-label="パーツパレットを閉じる"
+              title="左パーツパレットを隠す"
+              aria-label="左パーツパレットを隠す"
             >
-              <X size={14} />
+              <PanelLeft size={15} />
             </button>
           )}
         </div>

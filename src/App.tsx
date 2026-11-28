@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { PanelLeft, PanelRight } from 'lucide-react';
 import { hitTestGate, screenToWorld, Viewport } from './canvas/hitTest';
 import { renderGateSymbolPreview } from './canvas/renderer';
 import { CircuitCanvas } from './components/CircuitCanvas';
@@ -593,10 +594,6 @@ export const App: React.FC = () => {
         onNewCircuit={() => store.createNewCircuit()}
         onNewHdlCircuit={handleNewHdlCircuit}
         onDeleteCircuit={store.deleteCircuit}
-        leftSidebarOpen={leftSidebarOpen}
-        rightSidebarOpen={rightSidebarOpen}
-        onToggleLeftSidebar={toggleLeftSidebar}
-        onToggleRightSidebar={toggleRightSidebar}
         onUndo={store.undo}
         onRedo={store.redo}
         onToggleSimMode={() => {
@@ -676,6 +673,24 @@ export const App: React.FC = () => {
 
         <div className={`workspace-center ${hdlDockPos === 'right' ? 'dock-row' : 'dock-col'}`}>
           <div ref={canvasHostRef} className="workspace-canvas-col">
+            <button
+              className={`icon-btn canvas-floating-toggle canvas-floating-left ${leftSidebarOpen ? 'is-hidden' : 'is-visible'}`}
+              onClick={toggleLeftSidebar}
+              title="左パーツパレットを表示"
+              aria-label="左パーツパレットを表示"
+              tabIndex={leftSidebarOpen ? -1 : 0}
+            >
+              <PanelLeft size={16} />
+            </button>
+            <button
+              className={`icon-btn canvas-floating-toggle canvas-floating-right ${rightSidebarOpen ? 'is-hidden' : 'is-visible'}`}
+              onClick={toggleRightSidebar}
+              title="右インスペクタを表示"
+              aria-label="右インスペクタを表示"
+              tabIndex={rightSidebarOpen ? -1 : 0}
+            >
+              <PanelRight size={16} />
+            </button>
             <CircuitCanvas
               project={project}
               circuit={activeCircuit}
