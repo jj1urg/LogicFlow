@@ -598,7 +598,9 @@ export function useProjectStore() {
           propsPatch?.bundleMode !== undefined ||
           propsPatch?.interfaceFields !== undefined ||
           propsPatch?.hasCarryIn !== undefined ||
-          propsPatch?.hasEnable !== undefined
+          propsPatch?.hasEnable !== undefined ||
+          propsPatch?.segDigits !== undefined ||
+          propsPatch?.segMode !== undefined
         ) {
           circ.wires = rerouteWiresForGates(new Set([gateId]), circ, d);
         }

@@ -110,10 +110,10 @@ export const GATE_CATALOG: Record<GateType, GateCatalogEntry> = {
     name: '7セグメント表示器',
     shortName: '7SEG',
     category: 'io',
-    description: '4ビットHEXデコードまたは7ビット直接入力対応の7セグディスプレイ',
+    description: '1〜4桁(4〜16bit)HEXデコードまたは7bit直接入力対応の7セグディスプレイ',
     defaultWidth: 68,
     defaultHeight: 96,
-    defaultProps: { bitWidth: 4, segMode: 'hex' },
+    defaultProps: { bitWidth: 4, segMode: 'hex', segDigits: 1 },
   },
   NUM_DISPLAY: {
     type: 'NUM_DISPLAY',
@@ -473,6 +473,18 @@ export function getMuxConfig(p: GateProps): { channels: number; selectBits: numb
   return { channels: 1 << selectBits, selectBits };
 }
 
+export function getSevenSegConfig(p: GateProps): {
+  mode: 'hex' | 'direct';
+  digits: number;
+  bitWidth: number;
+} {
+  if (p.segMode === 'direct') {
+    return { mode: 'direct', digits: 1, bitWidth: 7 };
+  }
+  const digits = Math.max(1, Math.min(4, Math.round(p.segDigits ?? 1)));
+  return { mode: 'hex', digits, bitWidth: digits * 4 };
+}
+
 export function getGateSize(
   gate: GateInstance,
   project?: ProjectDocument,
@@ -507,6 +519,13 @@ export function getGateSize(
   if (gate.type === 'IFACE_BUNDLE') {
     const fields = p.interfaceFields ?? [];
     return { width: 108, height: Math.max(72, fields.length * GRID_SIZE + 28) };
+  }
+  if (gate.type === 'SEVEN_SEG') {
+    const { digits } = getSevenSegConfig(p);
+    return {
+      width: digits === 1 ? entry.defaultWidth : digits * 50 + 20,
+      height: entry.defaultHeight,
+    };
   }
   if (gate.type === 'SUBCIRCUIT') {
     const sub = p.subcircuitId && project ? project.circuits[p.subcircuitId] : undefined;
@@ -605,16 +624,16 @@ export function getGatePins(gate: GateInstance, project?: ProjectDocument): PinD
       return [{ id: 'in', name: 'IN', dir: 'in', side: 'left', x: -hw, y: 0, bitWidth: bw }];
 
     case 'SEVEN_SEG': {
-      const w = p.segMode === 'direct' ? 7 : 4;
+      const cfg = getSevenSegConfig(p);
       return [
         {
           id: 'in',
-          name: p.segMode === 'direct' ? 'SEG' : 'HEX',
+          name: cfg.mode === 'direct' ? 'SEG' : cfg.digits > 1 ? `HEX${cfg.bitWidth}` : 'HEX',
           dir: 'in',
           side: 'left',
           x: -hw,
           y: 0,
-          bitWidth: w,
+          bitWidth: cfg.bitWidth,
         },
       ];
     }
@@ -1046,6 +1065,12 @@ export function buildReplacementGate(
     newType !== 'SUBCIRCUIT'
   ) {
     nextProps.bitWidth = oldProps.bitWidth;
+  }
+  if (oldProps.bitWidth !== undefined && newType === 'SEVEN_SEG') {
+    const digits = Math.max(1, Math.min(4, Math.ceil(oldProps.bitWidth / 4)));
+    nextProps.segMode = 'hex';
+    nextProps.segDigits = digits;
+    nextProps.bitWidth = digits * 4;
   }
   if (
     oldProps.inputCount !== undefined &&

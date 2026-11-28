@@ -100,8 +100,10 @@ export interface GateProps {
   pressed?: boolean;
   /** Display radix for NUM_DISPLAY */
   radix?: 'hex' | 'dec' | 'signed' | 'bin';
-  /** SEVEN_SEG mode: 'hex' (4-bit decoder) or 'direct' (7-bit segments) */
+  /** SEVEN_SEG mode: 'hex' (4..16-bit multi-digit decoder) or 'direct' (7-bit segments) */
   segMode?: 'hex' | 'direct';
+  /** Number of HEX digits for SEVEN_SEG in hex mode (1..4, default 1) */
+  segDigits?: number;
   /** Net name for TUNNEL */
   netName?: string;
   /** Splitter mode: 'split' (1->N) or 'merge' (N->1) */

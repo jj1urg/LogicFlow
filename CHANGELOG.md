@@ -6,6 +6,16 @@
 
 ---
 
+## 2026-11-29 — v0.19-r0.0 7セグメント表示器の多桁 HEX 表示（1〜4桁 / 最大16bit）対応
+
+### 実施内容
+
+- **7セグメント表示器 (`SEVEN_SEG`) に 1〜4 桁 HEX 表示設定を追加** (`src/core/types.ts`, `src/core/catalog.ts`, `src/canvas/renderer.ts`, `src/components/InspectorPanel.tsx`, `src/store/useProjectStore.ts`, `tests/catalog_routing_hittest.test.ts`):
+  - パレットのパーツ数を増やさず、既存 `SEVEN_SEG`（HEX モード）のプロパティに **表示桁数（`1桁 4bit` / `2桁 8bit` / `3桁 12bit` / `4桁 16bit`、上限 4 桁固定）** を追加しました（16bit 超の表示は `NUM_DISPLAY` へ役割分担）。
+  - 桁数に応じて本体横幅と入力端子ビット幅・位置が自動調整され、接続中のワイヤーも自動再配線されます。
+  - 各 4bit ニブルごとに独立して 4 値デコード（`X` は橙 `E`、`Z` は青 `-`、確定値は緑の 16 進表示）を行うほか、不足ビットの MSB `0` パディングおよび超過ビットの下位ビット切り捨てにも対応しています。
+  - `NUM_DISPLAY`（例: 8bit）から `SEVEN_SEG` へパーツ差し替えした際は、ビット幅から自動的に適切な桁数（2桁 8bit 等）を引き継ぐようにしました。
+
 ## 2026-11-29 — v0.18-r8.0 ビット幅不一致接続の MSB 0 パディング／下位ビット切り捨て＆出力端子色の厳密化
 
 ### 実施内容

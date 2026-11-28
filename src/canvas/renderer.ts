@@ -3,6 +3,7 @@ import {
   getGatePins,
   getGateSize,
   getPinWorldPos,
+  getSevenSegConfig,
   GRID_SIZE,
 } from '../core/catalog';
 import {
@@ -19,7 +20,6 @@ import {
   SIGNAL_COLORS,
   SIGNAL_GLOW,
   SIGNAL_LABELS,
-  toUnsignedInt,
   X_CAUSE_COLORS,
   X_CAUSE_GLOW,
   X_CAUSE_LABELS,
@@ -1372,31 +1372,10 @@ function drawSevenSegGate(
   ctx.lineWidth = 2;
   ctx.stroke();
 
-  let mask = 0;
-  let color = '#22c55e';
-  if (showSignals && val) {
-    const reqWidth = gate.props.segMode === 'direct' ? 7 : 4;
-    const fitted = fitValueWidth(val, reqWidth);
-    const hasX = fitted.bits.includes(BIT_X);
-    const allZ = fitted.bits.every((b) => b === BIT_Z);
-    const hasZ = fitted.bits.includes(BIT_Z);
-    if (hasX) {
-      mask = 0x79; // E
-      color = SIGNAL_COLORS[BIT_X];
-    } else if (allZ || (gate.props.segMode !== 'direct' && hasZ)) {
-      mask = 0x40; // -
-      color = SIGNAL_COLORS[BIT_Z];
-    } else if (gate.props.segMode === 'direct') {
-      for (let i = 0; i < 7; i++) {
-        if (fitted.bits[i] === BIT_1) mask |= 1 << i;
-      }
-    } else {
-      const u = toUnsignedInt(fitted);
-      if (u !== null) mask = HEX_TO_7SEG[u & 0xf];
-    }
-  }
+  const cfg = getSevenSegConfig(gate.props);
+  const fitted = showSignals && val ? fitValueWidth(val, cfg.bitWidth) : null;
 
-  // Segment coordinates relative to center
+  // Segment coordinates relative to a single digit's center
   const segs: [number, number, number, number][] = [
     [-14, -32, 14, -32], // a
     [16, -29, 16, -3], // b
@@ -1407,22 +1386,66 @@ function drawSevenSegGate(
     [-14, 0, 14, 0], // g
   ];
 
+  const digitPitch = 50;
+  const startX = -((cfg.digits - 1) * digitPitch) / 2;
+
   ctx.lineCap = 'round';
-  segs.forEach(([x1, y1, x2, y2], idx) => {
-    const lit = (mask & (1 << idx)) !== 0;
-    ctx.save();
-    if (lit) {
-      ctx.shadowColor = color;
-      ctx.shadowBlur = 10;
+  for (let d = 0; d < cfg.digits; d++) {
+    const cx = startX + d * digitPitch;
+    let mask = 0;
+    let color = '#22c55e';
+
+    if (fitted) {
+      if (cfg.mode === 'direct') {
+        const hasX = fitted.bits.includes(BIT_X);
+        const allZ = fitted.bits.every((b) => b === BIT_Z);
+        if (hasX) {
+          mask = 0x79; // E
+          color = SIGNAL_COLORS[BIT_X];
+        } else if (allZ) {
+          mask = 0x40; // -
+          color = SIGNAL_COLORS[BIT_Z];
+        } else {
+          for (let i = 0; i < 7; i++) {
+            if (fitted.bits[i] === BIT_1) mask |= 1 << i;
+          }
+        }
+      } else {
+        // Left-to-right: MSB nibble first (d=0 is highest nibble, d=digits-1 is LSB nibble)
+        const nibbleIdx = cfg.digits - 1 - d;
+        const nibbleBits = fitted.bits.slice(nibbleIdx * 4, nibbleIdx * 4 + 4);
+        if (nibbleBits.includes(BIT_X)) {
+          mask = 0x79; // E
+          color = SIGNAL_COLORS[BIT_X];
+        } else if (nibbleBits.includes(BIT_Z)) {
+          mask = 0x40; // -
+          color = SIGNAL_COLORS[BIT_Z];
+        } else {
+          let v = 0;
+          for (let k = 0; k < 4; k++) {
+            if (nibbleBits[k] === BIT_1) v |= 1 << k;
+          }
+          mask = HEX_TO_7SEG[v & 0xf];
+        }
+      }
     }
-    ctx.strokeStyle = lit ? color : '#1e293b';
-    ctx.lineWidth = 5.5;
-    ctx.beginPath();
-    ctx.moveTo(x1, y1);
-    ctx.lineTo(x2, y2);
-    ctx.stroke();
-    ctx.restore();
-  });
+
+    segs.forEach(([x1, y1, x2, y2], idx) => {
+      const lit = (mask & (1 << idx)) !== 0;
+      ctx.save();
+      if (lit) {
+        ctx.shadowColor = color;
+        ctx.shadowBlur = 10;
+      }
+      ctx.strokeStyle = lit ? color : '#1e293b';
+      ctx.lineWidth = 5.5;
+      ctx.beginPath();
+      ctx.moveTo(cx + x1, y1);
+      ctx.lineTo(cx + x2, y2);
+      ctx.stroke();
+      ctx.restore();
+    });
+  }
 }
 
 function drawNumDisplayGate(
