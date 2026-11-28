@@ -6,6 +6,21 @@
 
 ---
 
+## 2026-11-28 — v0.18-r1.0 HDLエディタの編集中ハイライト・VS Codeショートカット・構文エラー診断＆Discord OGP改善
+
+### 実施内容
+
+1. **HDL エディタの編集中リアルタイム構文ハイライト＆VS Code 風ショートカット** (`src/core/hdlEditor.ts`, `src/components/HdlDockPanel.tsx`, `src/styles.css`):
+   - 編集モードでも透過 `<textarea>`＋同期ハイライト `<pre>` オーバーレイによりリアルタイムのシンタックスハイライト表示に対応しました。
+   - VS Code 準拠の基本ショートカットとエディタ内 Undo/Redo (`Ctrl/Cmd+Z`, `Ctrl/Cmd+Shift+Z` / `Ctrl+Y`) を実装しました：`Ctrl/Cmd+X`（未選択時の行丸ごと切り取り）、`Ctrl/Cmd+C`（未選択時の行コピー）、`Alt+↑/↓`（行／選択ブロックの上下入れ替え）、`Shift+Alt+↑/↓`（行複製）、`Ctrl/Cmd+Shift+K`（行削除）、`Ctrl/Cmd+/`（`//` コメント切替）、`Tab` / `Shift+Tab`（複数行インデント／アウトデント）、`Enter`（自動インデント）。
+2. **HDL 構文チェック＆エラー診断（誤構文のサイレント論理合成を防止）** (`src/core/hdlDiagnostics.ts`, `src/components/HdlDockPanel.tsx`, `src/styles.css`):
+   - 括弧・ブロック (`module/endmodule`, `begin/end`, `case/endcase`) 不一致、セミコロン欠落、`assign` 不正、モジュール直下の `assign` 書き忘れ、未宣言信号タイポ警告などを行番号付きでリアルタイム診断し、ガタードット・行ハイライト・クリックジャンプ付き診断バーで可視化しました。
+   - 構文エラーが残っている場合は「論理合成して反映」を安全にブロックし、該当行と理由を赤バナーで通知します。
+3. **Discord 等向け OGP 画像の 24-bit RGB PNG 最適化・メタタグ・配信ヘッダ整備** (`public/og-image.png`, `public/_headers`, `index.html`, `public/sw.js`):
+   - `og-image.png` を不要な透過チャネル無しの標準 24-bit RGB sRGB PNG へ最適化し、`index.html` に `og:image:secure_url` / `og:image:type="image/png"` / キャッシュバストクエリ (`?v=18`) を追加、Cloudflare Workers Assets 用 `public/_headers` を配置しました。
+4. **ユニットテスト追加** (`tests/hdl_editor_diagnostics.test.ts`):
+   - VS Code ショートカット全種、構文エラー／未宣言信号警告、および実世界 SystemVerilog (`docs/test_hdl/td4/*.sv`, `cic_decimator.sv`) での誤検出ゼロを検証するテストを追加しました。
+
 ## 2026-11-28 — v0.18-r0.0 タブドラッグ並び替え機能＆OGP画像の実回路刷新
 
 ### 実施内容

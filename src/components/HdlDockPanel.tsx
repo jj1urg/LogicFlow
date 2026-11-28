@@ -25,6 +25,18 @@ import {
   HdlSourceFile,
   listModuleNamesInFiles,
 } from '../core/hdl';
+import { HdlDiagnostic, validateHdlSource } from '../core/hdlDiagnostics';
+import {
+  copyCurrentLine,
+  cutCurrentLine,
+  deleteSelectedLines,
+  duplicateSelectedLines,
+  EditorEditResult,
+  indentSelection,
+  insertAutoIndentedNewline,
+  moveSelectedLines,
+  toggleLineComment,
+} from '../core/hdlEditor';
 import { CircuitDocument, HdlProjectBundle } from '../core/types';
 
 export type HdlDockPosition = 'bottom' | 'right';
@@ -221,6 +233,10 @@ export const HdlDockPanel: React.FC<HdlDockPanelProps> = ({
   const [warnings, setWarnings] = useState<string[]>([]);
   const [dockSize, setDockSize] = useState(dock === 'bottom' ? 280 : 450);
   const gutterRef = useRef<HTMLDivElement>(null);
+  const highlightRef = useRef<HTMLPreElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const undoStackRef = useRef<{ value: string; s: number; e: number }[]>([]);
+  const redoStackRef = useRef<{ value: string; s: number; e: number }[]>([]);
 
   // Sync module draft when switching inspected circuit or after re-synthesis
   useEffect(() => {
@@ -228,6 +244,8 @@ export const HdlDockPanel: React.FC<HdlDockPanelProps> = ({
     setScope('module');
     setError(null);
     setWarnings([]);
+    undoStackRef.current = [];
+    redoStackRef.current = [];
   }, [circuit.id, savedModuleSource]);
 
   // Sync HDL project bundle files & top module when bundle changes
@@ -281,16 +299,58 @@ export const HdlDockPanel: React.FC<HdlDockPanelProps> = ({
   const isModified = scope === 'project' ? isProjectModified : isModuleModified;
   const canEdit = scope === 'module' || scope === 'project';
   const lines = useMemo(() => activeSource.split(/\r?\n/), [activeSource]);
+  const diagnostics: HdlDiagnostic[] = useMemo(
+    () => (canEdit ? validateHdlSource(activeSource) : []),
+    [canEdit, activeSource],
+  );
+  const diagByLine = useMemo(() => {
+    const map = new Map<number, 'error' | 'warning'>();
+    for (const d of diagnostics) {
+      const cur = map.get(d.line);
+      if (!cur || d.severity === 'error') map.set(d.line, d.severity);
+    }
+    return map;
+  }, [diagnostics]);
+  const errorCount = diagnostics.filter((d) => d.severity === 'error').length;
+  const warningCount = diagnostics.length - errorCount;
 
   const handleSynthesize = () => {
     try {
       setError(null);
       if (scope === 'project' && hdlProject && onSynthesizeProject) {
+        const projErrors: string[] = [];
+        const projDiagWarns: string[] = [];
+        for (const f of projFiles) {
+          const diags = validateHdlSource(f.content);
+          for (const d of diags) {
+            const label = `[${f.name} L${d.line}] ${d.message}`;
+            if (d.severity === 'error') projErrors.push(label);
+            else projDiagWarns.push(label);
+          }
+        }
+        if (projErrors.length > 0) {
+          setError(`構文エラーのため論理合成を中止しました:\n${projErrors.slice(0, 6).join('\n')}`);
+          return;
+        }
         const warns = onSynthesizeProject(hdlProject.id, projFiles, projTopName || undefined);
-        setWarnings(warns);
+        setWarnings([...projDiagWarns, ...warns]);
       } else {
+        const diags = validateHdlSource(draft);
+        const errs = diags.filter((d) => d.severity === 'error');
+        const diagWarns = diags
+          .filter((d) => d.severity === 'warning')
+          .map((d) => `L${d.line}: ${d.message}`);
+        if (errs.length > 0) {
+          setError(
+            `構文エラーのため論理合成を中止しました:\n${errs
+              .slice(0, 6)
+              .map((e) => `L${e.line}: ${e.message}`)
+              .join('\n')}`,
+          );
+          return;
+        }
         const warns = onSynthesize(circuit.id, draft);
-        setWarnings(warns);
+        setWarnings([...diagWarns, ...warns]);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -304,6 +364,8 @@ export const HdlDockPanel: React.FC<HdlDockPanelProps> = ({
     } else {
       setDraft(savedModuleSource);
     }
+    undoStackRef.current = [];
+    redoStackRef.current = [];
     setError(null);
   };
 
@@ -313,6 +375,44 @@ export const HdlDockPanel: React.FC<HdlDockPanelProps> = ({
     } else {
       setDraft(val);
     }
+  };
+
+  const applyEditorResult = (el: HTMLTextAreaElement, res: EditorEditResult) => {
+    if (res.value !== activeSource) {
+      undoStackRef.current.push({
+        value: activeSource,
+        s: el.selectionStart,
+        e: el.selectionEnd,
+      });
+      if (undoStackRef.current.length > 100) undoStackRef.current.shift();
+      redoStackRef.current = [];
+      handleEditChange(res.value);
+    }
+    if (res.clipboardText !== undefined) {
+      void navigator.clipboard?.writeText(res.clipboardText).catch(() => undefined);
+    }
+    requestAnimationFrame(() => {
+      el.selectionStart = res.selectionStart;
+      el.selectionEnd = res.selectionEnd;
+    });
+  };
+
+  const jumpToLine = (lineNum: number) => {
+    if (!editing && canEdit) setEditing(true);
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (!el) return;
+      const targetIdx = Math.max(0, Math.min(lines.length - 1, lineNum - 1));
+      let offset = 0;
+      for (let i = 0; i < targetIdx; i++) offset += lines[i].length + 1;
+      el.focus();
+      el.selectionStart = offset;
+      el.selectionEnd = offset + lines[targetIdx].length;
+      const targetScroll = Math.max(0, targetIdx * 20 - el.clientHeight * 0.35);
+      el.scrollTop = targetScroll;
+      if (gutterRef.current) gutterRef.current.scrollTop = targetScroll;
+      if (highlightRef.current) highlightRef.current.scrollTop = targetScroll;
+    });
   };
 
   const handleCopy = () => {
@@ -390,6 +490,19 @@ export const HdlDockPanel: React.FC<HdlDockPanelProps> = ({
             </span>
           )}
           {isModified && <span className="hdl-dirty-badge">ソース未反映</span>}
+          {canEdit && errorCount > 0 && (
+            <span
+              className="hdl-diag-pill err"
+              title="構文エラーがあります（下の診断をクリックすると該当行へジャンプします）"
+            >
+              エラー {errorCount}
+            </span>
+          )}
+          {canEdit && errorCount === 0 && warningCount > 0 && (
+            <span className="hdl-diag-pill warn" title="未宣言信号などの警告があります">
+              警告 {warningCount}
+            </span>
+          )}
         </div>
 
         <div className="hdl-dock-controls">
@@ -581,6 +694,24 @@ export const HdlDockPanel: React.FC<HdlDockPanelProps> = ({
           ))}
         </div>
       )}
+      {canEdit && diagnostics.length > 0 && (
+        <div className="hdl-diag-bar" role="status" aria-label="HDL 構文診断">
+          {diagnostics.slice(0, 4).map((d, i) => (
+            <button
+              key={`${d.line}-${i}`}
+              className={`hdl-diag-item ${d.severity}`}
+              onClick={() => jumpToLine(d.line)}
+              title="クリックして該当行へ移動"
+            >
+              <span className="hdl-diag-ln">L{d.line}</span>
+              <span className="hdl-diag-msg">{d.message}</span>
+            </button>
+          ))}
+          {diagnostics.length > 4 && (
+            <span className="hdl-diag-more">他 {diagnostics.length - 4} 件</span>
+          )}
+        </div>
+      )}
 
       <div className="hdl-dock-main-split">
         {showTree && moduleTree && (moduleTree.root || moduleTree.orphans.length > 0) && (
@@ -665,40 +796,195 @@ export const HdlDockPanel: React.FC<HdlDockPanelProps> = ({
           {editing && canEdit ? (
             <div className="hdl-editor-wrap">
               <div ref={gutterRef} className="hdl-editor-gutter" aria-hidden="true">
-                {lines.map((_, idx) => (
-                  <div key={idx} className="hdl-editor-ln">
-                    {idx + 1}
-                  </div>
-                ))}
+                {lines.map((_, idx) => {
+                  const sev = diagByLine.get(idx + 1);
+                  return (
+                    <div
+                      key={idx}
+                      className={`hdl-editor-ln ${sev === 'error' ? 'ln-err' : sev === 'warning' ? 'ln-warn' : ''}`}
+                    >
+                      {sev && <span className={`hdl-ln-dot ${sev}`} />}
+                      <span>{idx + 1}</span>
+                    </div>
+                  );
+                })}
               </div>
-              <textarea
-                className="hdl-editor-textarea"
-                value={activeSource}
-                onChange={(e) => handleEditChange(e.target.value)}
-                onScroll={(e) => {
-                  if (gutterRef.current) {
-                    gutterRef.current.scrollTop = e.currentTarget.scrollTop;
-                  }
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Tab') {
-                    e.preventDefault();
+              <div className="hdl-editor-stage">
+                <pre ref={highlightRef} className="hdl-editor-highlight" aria-hidden="true">
+                  {lines.map((ln, idx) => {
+                    const sev = diagByLine.get(idx + 1);
+                    return (
+                      <div
+                        key={idx}
+                        className={`hdl-ed-hl-line ${sev === 'error' ? 'hl-err' : sev === 'warning' ? 'hl-warn' : ''}`}
+                      >
+                        {highlightHdlLine(ln)}
+                      </div>
+                    );
+                  })}
+                </pre>
+                <textarea
+                  ref={textareaRef}
+                  className="hdl-editor-textarea"
+                  value={activeSource}
+                  onChange={(e) => {
                     const el = e.currentTarget;
-                    const s = el.selectionStart;
-                    const end = el.selectionEnd;
-                    const next = `${activeSource.slice(0, s)}  ${activeSource.slice(end)}`;
-                    handleEditChange(next);
-                    requestAnimationFrame(() => {
-                      el.selectionStart = el.selectionEnd = s + 2;
+                    undoStackRef.current.push({
+                      value: activeSource,
+                      s: el.selectionStart,
+                      e: el.selectionEnd,
                     });
-                  } else if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && !editLocked) {
-                    e.preventDefault();
-                    handleSynthesize();
-                  }
-                }}
-                spellCheck={false}
-                placeholder="module ... endmodule"
-              />
+                    if (undoStackRef.current.length > 100) undoStackRef.current.shift();
+                    redoStackRef.current = [];
+                    handleEditChange(e.target.value);
+                  }}
+                  onScroll={(e) => {
+                    const el = e.currentTarget;
+                    if (gutterRef.current) gutterRef.current.scrollTop = el.scrollTop;
+                    if (highlightRef.current) {
+                      highlightRef.current.scrollTop = el.scrollTop;
+                      highlightRef.current.scrollLeft = el.scrollLeft;
+                    }
+                  }}
+                  onKeyDown={(e) => {
+                    const el = e.currentTarget;
+                    const mod = e.ctrlKey || e.metaKey;
+                    const k = e.key.toLowerCase();
+
+                    // Undo / Redo inside HDL editor
+                    if (mod && k === 'z' && !e.shiftKey) {
+                      const prevSnap = undoStackRef.current.pop();
+                      if (prevSnap) {
+                        e.preventDefault();
+                        redoStackRef.current.push({
+                          value: activeSource,
+                          s: el.selectionStart,
+                          e: el.selectionEnd,
+                        });
+                        handleEditChange(prevSnap.value);
+                        requestAnimationFrame(() => {
+                          el.selectionStart = prevSnap.s;
+                          el.selectionEnd = prevSnap.e;
+                        });
+                      }
+                      return;
+                    }
+                    if ((mod && k === 'y') || (mod && e.shiftKey && k === 'z')) {
+                      const nextSnap = redoStackRef.current.pop();
+                      if (nextSnap) {
+                        e.preventDefault();
+                        undoStackRef.current.push({
+                          value: activeSource,
+                          s: el.selectionStart,
+                          e: el.selectionEnd,
+                        });
+                        handleEditChange(nextSnap.value);
+                        requestAnimationFrame(() => {
+                          el.selectionStart = nextSnap.s;
+                          el.selectionEnd = nextSnap.e;
+                        });
+                      }
+                      return;
+                    }
+
+                    // Ctrl/Cmd+Enter: Synthesize
+                    if (mod && e.key === 'Enter' && !editLocked) {
+                      e.preventDefault();
+                      handleSynthesize();
+                      return;
+                    }
+
+                    // Tab / Shift+Tab: Indent / Outdent
+                    if (e.key === 'Tab') {
+                      e.preventDefault();
+                      applyEditorResult(
+                        el,
+                        indentSelection(
+                          activeSource,
+                          el.selectionStart,
+                          el.selectionEnd,
+                          e.shiftKey,
+                        ),
+                      );
+                      return;
+                    }
+
+                    // Enter: Smart auto-indent
+                    if (e.key === 'Enter' && !mod && !e.altKey) {
+                      e.preventDefault();
+                      applyEditorResult(
+                        el,
+                        insertAutoIndentedNewline(activeSource, el.selectionStart, el.selectionEnd),
+                      );
+                      return;
+                    }
+
+                    // Ctrl/Cmd+X with empty selection: Cut entire current line (VS Code)
+                    if (mod && !e.shiftKey && !e.altKey && k === 'x') {
+                      const res = cutCurrentLine(activeSource, el.selectionStart, el.selectionEnd);
+                      if (res) {
+                        e.preventDefault();
+                        applyEditorResult(el, res);
+                      }
+                      return;
+                    }
+
+                    // Ctrl/Cmd+C with empty selection: Copy entire current line (VS Code)
+                    if (mod && !e.shiftKey && !e.altKey && k === 'c') {
+                      const copied = copyCurrentLine(
+                        activeSource,
+                        el.selectionStart,
+                        el.selectionEnd,
+                      );
+                      if (copied !== null) {
+                        e.preventDefault();
+                        void navigator.clipboard?.writeText(copied).catch(() => undefined);
+                      }
+                      return;
+                    }
+
+                    // Ctrl/Cmd+Shift+K: Delete current/selected lines (VS Code)
+                    if (mod && e.shiftKey && k === 'k') {
+                      e.preventDefault();
+                      applyEditorResult(
+                        el,
+                        deleteSelectedLines(activeSource, el.selectionStart, el.selectionEnd),
+                      );
+                      return;
+                    }
+
+                    // Ctrl/Cmd+/: Toggle line comment `// ` (VS Code)
+                    if (mod && !e.altKey && e.key === '/') {
+                      e.preventDefault();
+                      applyEditorResult(
+                        el,
+                        toggleLineComment(activeSource, el.selectionStart, el.selectionEnd),
+                      );
+                      return;
+                    }
+
+                    // Alt+Up / Alt+Down: Move lines up/down; Shift+Alt+Up/Down: Duplicate lines (VS Code)
+                    if (e.altKey && !mod && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+                      e.preventDefault();
+                      const dir: -1 | 1 = e.key === 'ArrowUp' ? -1 : 1;
+                      const res = e.shiftKey
+                        ? duplicateSelectedLines(
+                            activeSource,
+                            el.selectionStart,
+                            el.selectionEnd,
+                            dir,
+                          )
+                        : moveSelectedLines(activeSource, el.selectionStart, el.selectionEnd, dir);
+                      applyEditorResult(el, res);
+                      return;
+                    }
+                  }}
+                  spellCheck={false}
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  placeholder="module ... endmodule"
+                />
+              </div>
             </div>
           ) : (
             <div
