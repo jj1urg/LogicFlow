@@ -18,6 +18,7 @@ import {
 import { importVerilogToCircuits } from '../src/core/hdl';
 import { BIT_0, BIT_1, BIT_X, BIT_Z, fromInt, fromLiteral } from '../src/core/logic4';
 import { createEmptySequentialState, simulateCircuit } from '../src/core/simulator';
+import { closeCircuitTabState, resolveOpenTabIds } from '../src/core/tabs';
 import { CircuitDocument, ProjectDocument } from '../src/core/types';
 import { formatAppVersion } from '../src/core/version';
 
@@ -356,5 +357,48 @@ describe('Live Subcircuit Popup & Signal Watch / Waveform Helpers', () => {
       full: 'v0.16',
       raw: '0.16.0',
     });
+  });
+
+  it('7. purely closes tabs down to 0 open tabs while preserving module definitions and MRU return order', () => {
+    const c1: CircuitDocument = { id: 'c1', name: 'Main', gates: [], wires: [] };
+    const c2: CircuitDocument = { id: 'c2', name: 'Alu', gates: [], wires: [] };
+    const c3: CircuitDocument = { id: 'c3', name: 'Reg', gates: [], wires: [] };
+    const stub: CircuitDocument = { id: 's1', name: 'Ext', gates: [], wires: [], isStub: true };
+    const proj = makeProject([c1, c2, c3, stub], 'c3');
+
+    // Legacy project (openTabIds undefined) resolves all non-stub circuits
+    expect(resolveOpenTabIds({ ...proj, openTabIds: undefined })).toEqual(['c1', 'c2', 'c3']);
+
+    // Explicitly empty openTabIds stays empty (never auto-reopens all modules!)
+    expect(resolveOpenTabIds({ ...proj, openTabIds: [] })).toEqual([]);
+
+    // Closing active tab c3 with MRU history [c1, c2, c3] returns to c2 without deleting c3
+    const p1: ProjectDocument = { ...proj, openTabIds: ['c1', 'c2', 'c3'], activeCircuitId: 'c3' };
+    const step1 = closeCircuitTabState(p1, 'c3', ['c1', 'c2', 'c3']);
+    expect(step1.openTabIds).toEqual(['c1', 'c2']);
+    expect(step1.activeCircuitId).toBe('c2');
+    expect(p1.circuits['c3']).toBeDefined();
+
+    // Closing inactive tab c1 keeps active c2
+    const p2: ProjectDocument = {
+      ...p1,
+      openTabIds: step1.openTabIds,
+      activeCircuitId: step1.activeCircuitId,
+    };
+    const step2 = closeCircuitTabState(p2, 'c1', step1.tabHistory);
+    expect(step2.openTabIds).toEqual(['c2']);
+    expect(step2.activeCircuitId).toBe('c2');
+
+    // Closing the last remaining tab c2 succeeds cleanly -> 0 open tabs, activeCircuitId === ''
+    const p3: ProjectDocument = {
+      ...p2,
+      openTabIds: step2.openTabIds,
+      activeCircuitId: step2.activeCircuitId,
+    };
+    const step3 = closeCircuitTabState(p3, 'c2', step2.tabHistory);
+    expect(step3.openTabIds).toEqual([]);
+    expect(step3.activeCircuitId).toBe('');
+    expect(resolveOpenTabIds({ ...p3, openTabIds: step3.openTabIds })).toEqual([]);
+    expect(Object.keys(p3.circuits)).toEqual(['c1', 'c2', 'c3', 's1']);
   });
 });

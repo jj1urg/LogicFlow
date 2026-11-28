@@ -20,6 +20,7 @@ import {
   RuntimeInputOverride,
   simulateCompiledCircuit,
 } from '../core/simulator';
+import { closeCircuitTabState, pickNextActiveTab, resolveOpenTabIds } from '../core/tabs';
 import {
   CircuitDocument,
   GateInstance,
@@ -64,7 +65,8 @@ function loadInitialProject(): ProjectDocument {
         parsed &&
         parsed.version === 1 &&
         parsed.circuits &&
-        parsed.circuits[parsed.activeCircuitId]
+        Object.keys(parsed.circuits).length > 0 &&
+        (parsed.activeCircuitId === '' || Boolean(parsed.circuits[parsed.activeCircuitId]))
       ) {
         return parsed;
       }
@@ -101,7 +103,7 @@ export function useProjectStore() {
   // Sequential state persisted per circuitId
   const seqStatesRef = useRef<Record<string, SequentialState>>({});
   // MRU stack of visited circuit tab IDs so closing the active tab returns to the previously viewed tab
-  const tabHistoryRef = useRef<string[]>([project.activeCircuitId]);
+  const tabHistoryRef = useRef<string[]>(project.activeCircuitId ? [project.activeCircuitId] : []);
 
   useEffect(() => {
     const id = project.activeCircuitId;
@@ -114,18 +116,9 @@ export function useProjectStore() {
 
   const pickPreviousTab = useCallback(
     (closedId: string, remainingTabs: string[], circuits: Record<string, CircuitDocument>) => {
-      tabHistoryRef.current = tabHistoryRef.current.filter((id) => id !== closedId);
-      for (let i = tabHistoryRef.current.length - 1; i >= 0; i--) {
-        const cand = tabHistoryRef.current[i];
-        if (cand !== closedId && remainingTabs.includes(cand) && circuits[cand]) {
-          return cand;
-        }
-      }
-      return (
-        remainingTabs[remainingTabs.length - 1] ??
-        Object.values(circuits).find((c) => !c.isStub)?.id ??
-        Object.keys(circuits)[0]
-      );
+      const res = pickNextActiveTab(closedId, remainingTabs, tabHistoryRef.current, circuits);
+      tabHistoryRef.current = res.tabHistory;
+      return res.activeCircuitId;
     },
     [],
   );
@@ -152,8 +145,9 @@ export function useProjectStore() {
     return () => window.clearTimeout(timer);
   }, [project]);
 
-  const activeCircuit: CircuitDocument = useMemo(() => {
-    return project.circuits[project.activeCircuitId] ?? Object.values(project.circuits)[0];
+  const activeCircuit: CircuitDocument | null = useMemo(() => {
+    if (!project.activeCircuitId) return null;
+    return project.circuits[project.activeCircuitId] ?? null;
   }, [project]);
 
   const simActive = project.settings.simMode === 'realtime' || manualSimRunning;
@@ -219,7 +213,7 @@ export function useProjectStore() {
   // Reset runtime overrides whenever leaving Run mode or switching circuit tabs
   useEffect(() => {
     setRuntimeInputs({});
-  }, [activeCircuit.id, manualSimRunning, project.settings.simMode]);
+  }, [activeCircuit?.id, manualSimRunning, project.settings.simMode]);
 
   // Commit structural mutation with undo history (blocked when editLocked is true unless allowDuringRun)
   const mutateProject = useCallback(
@@ -289,6 +283,7 @@ export function useProjectStore() {
 
   // Automatic clock oscillator timer (updates lightweight runtimeInputs only — zero JSON cloning!)
   const toggleAllClocks = useCallback(() => {
+    if (!activeCircuit) return;
     const clocks = activeCircuit.gates.filter((g) => g.type === 'CLOCK');
     if (clocks.length === 0) return;
     setRuntimeInputs((prev) => {
@@ -300,7 +295,7 @@ export function useProjectStore() {
       return next;
     });
     setSimTickCounter((c) => c + 1);
-  }, [activeCircuit.gates]);
+  }, [activeCircuit]);
 
   useEffect(() => {
     if (!simActive || !project.settings.clockRunning) return;
@@ -326,13 +321,14 @@ export function useProjectStore() {
   );
 
   const resetSequentialState = useCallback(() => {
+    if (!activeCircuit) return;
     const fresh = createEmptySequentialState();
     // Also attempt initializing any bistable propagated-X gate feedback loops to a clean stable state
     fresh.resetUnknownLoops = true;
     seqStatesRef.current[activeCircuit.id] = fresh;
     setSimTickCounter((c) => c + 1);
     showToast('順序回路(FF/レジスタ/RAM)および伝搬不定ループの状態をリセットしました');
-  }, [activeCircuit.id, showToast]);
+  }, [activeCircuit, showToast]);
 
   const stepSimulation = useCallback(() => {
     if (project.settings.simMode === 'manual') {
@@ -353,9 +349,7 @@ export function useProjectStore() {
       }
       setProject((prev) => {
         if (!prev.circuits[circuitId]) return prev;
-        const curTabs = prev.openTabIds?.length
-          ? prev.openTabIds.filter((id) => Boolean(prev.circuits[id]))
-          : Object.keys(prev.circuits).filter((id) => !prev.circuits[id].isStub);
+        const curTabs = resolveOpenTabIds(prev);
         const nextTabs = curTabs.includes(circuitId) ? curTabs : [...curTabs, circuitId];
         return { ...prev, activeCircuitId: circuitId, openTabIds: nextTabs };
       });
@@ -371,10 +365,8 @@ export function useProjectStore() {
       const count = Object.keys(project.circuits).length + 1;
       const finalName = name?.trim() || `Module_${count}`;
       mutateProject((d) => {
+        const curTabs = resolveOpenTabIds(d);
         d.circuits[id] = createBlankCircuit(id, finalName);
-        const curTabs = d.openTabIds?.length
-          ? d.openTabIds.filter((tid) => Boolean(d.circuits[tid]))
-          : Object.keys(d.circuits).filter((tid) => tid !== id && !d.circuits[tid]?.isStub);
         d.openTabIds = [...curTabs, id];
         d.activeCircuitId = id;
       });
@@ -422,6 +414,7 @@ export function useProjectStore() {
       });
 
       mutateProject((d) => {
+        const curTabs = resolveOpenTabIds(d);
         for (const c of result.circuits) {
           d.circuits[c.id] = c;
         }
@@ -429,9 +422,6 @@ export function useProjectStore() {
           ...(d.hdlProjects ?? {}),
           [result.hdlProject.id]: result.hdlProject,
         };
-        const curTabs = d.openTabIds?.length
-          ? d.openTabIds.filter((tid) => Boolean(d.circuits[tid]))
-          : Object.keys(d.circuits).filter((tid) => !d.circuits[tid]?.isStub);
         d.openTabIds = curTabs.includes(result.topCircuitId)
           ? curTabs
           : [...curTabs, result.topCircuitId];
@@ -458,46 +448,20 @@ export function useProjectStore() {
     [mutateProject],
   );
 
-  const deleteCircuit = useCallback(
-    (circuitId: string) => {
-      const curTabs = project.openTabIds?.length
-        ? project.openTabIds.filter((id) => Boolean(project.circuits[id]))
-        : Object.keys(project.circuits).filter((id) => !project.circuits[id].isStub);
-      if (curTabs.length <= 1) {
-        showToast('最後のタブは閉じられません');
-        return;
-      }
-      // Check if this circuit is referenced as a SUBCIRCUIT anywhere
-      const isReferenced = Object.values(project.circuits).some(
-        (c) =>
-          c.id !== circuitId &&
-          c.gates.some((g) => g.type === 'SUBCIRCUIT' && g.props.subcircuitId === circuitId),
-      );
-      mutateProject(
-        (d) => {
-          const tabs = d.openTabIds?.length
-            ? d.openTabIds.filter((id) => Boolean(d.circuits[id]))
-            : Object.keys(d.circuits).filter((id) => !d.circuits[id].isStub);
-          const nextTabs = tabs.filter((id) => id !== circuitId);
-          d.openTabIds = nextTabs;
-          if (!isReferenced) {
-            delete d.circuits[circuitId];
-          }
-          if (d.activeCircuitId === circuitId) {
-            d.activeCircuitId = pickPreviousTab(circuitId, nextTabs, d.circuits);
-          }
-        },
-        !isReferenced,
-        true,
-      );
-      if (isReferenced) {
-        showToast('モジュールタブを閉じました（参照中のためモジュール定義は保持されます）');
-      }
-      setSelectedGateIds(new Set());
-      setSelectedWireIds(new Set());
-    },
-    [mutateProject, pickPreviousTab, project.circuits, project.openTabIds, showToast],
-  );
+  /** Purely close a circuit tab (keeps module definition in project/palette; allows 0 open tabs) */
+  const closeCircuitTab = useCallback((circuitId: string) => {
+    setProject((prev) => {
+      const next = closeCircuitTabState(prev, circuitId, tabHistoryRef.current);
+      tabHistoryRef.current = next.tabHistory;
+      return {
+        ...prev,
+        openTabIds: next.openTabIds,
+        activeCircuitId: next.activeCircuitId,
+      };
+    });
+    setSelectedGateIds(new Set());
+    setSelectedWireIds(new Set());
+  }, []);
 
   const updateSymbolConfig = useCallback(
     (circuitId: string, config: ModuleSymbolConfig) => {
@@ -547,6 +511,7 @@ export function useProjectStore() {
       };
       mutateProject((d) => {
         const circ = d.circuits[d.activeCircuitId];
+        if (!circ) return;
         circ.gates.push(gate);
         markHdlDiverged(circ);
       });
@@ -561,6 +526,7 @@ export function useProjectStore() {
     (deltas: Map<string, Point>, recordHistory = true) => {
       mutateProject((d) => {
         const circ = d.circuits[d.activeCircuitId];
+        if (!circ) return;
         const movedIds = new Set<string>();
         for (const g of circ.gates) {
           const pos = deltas.get(g.id);
@@ -587,6 +553,7 @@ export function useProjectStore() {
     ) => {
       mutateProject((d) => {
         const circ = d.circuits[d.activeCircuitId];
+        if (!circ) return;
         const g = circ.gates.find((x) => x.id === gateId);
         if (!g) return;
         Object.assign(g, patch);
@@ -623,6 +590,7 @@ export function useProjectStore() {
       let info: ReturnType<typeof applyGateReplacement> | null = null;
       mutateProject((d) => {
         const circ = d.circuits[d.activeCircuitId];
+        if (!circ) return;
         info = applyGateReplacement(circ, gateId, newType, d, subcircuitId);
         if (!info.replaced) return;
         circ.wires = rerouteWiresForGates(new Set([gateId]), circ, d);
@@ -653,6 +621,7 @@ export function useProjectStore() {
       if (ids.size === 0) return;
       mutateProject((d) => {
         const circ = d.circuits[d.activeCircuitId];
+        if (!circ) return;
         circ.gates = circ.gates.filter((g) => !ids.has(g.id));
         for (const w of circ.wires) {
           if (w.from && ids.has(w.from.gateId)) w.from = undefined;
@@ -670,6 +639,7 @@ export function useProjectStore() {
     if (selectedGateIds.size === 0) return;
     mutateProject((d) => {
       const circ = d.circuits[d.activeCircuitId];
+      if (!circ) return;
       for (const g of circ.gates) {
         if (selectedGateIds.has(g.id)) {
           g.rotation = ((g.rotation + 90) % 360) as GateInstance['rotation'];
@@ -680,10 +650,12 @@ export function useProjectStore() {
   }, [mutateProject, selectedGateIds]);
 
   const alignSelectedToGrid = useCallback(() => {
+    if (!activeCircuit) return;
     const targets =
       selectedGateIds.size > 0 ? selectedGateIds : new Set(activeCircuit.gates.map((g) => g.id));
     mutateProject((d) => {
       const circ = d.circuits[d.activeCircuitId];
+      if (!circ) return;
       const gs = d.settings.gridSize || GRID_SIZE;
       for (const g of circ.gates) {
         if (targets.has(g.id)) {
@@ -694,7 +666,7 @@ export function useProjectStore() {
       circ.wires = rerouteWiresForGates(targets, circ, d);
     });
     showToast('グリッドに整列しました');
-  }, [activeCircuit.gates, mutateProject, selectedGateIds, showToast]);
+  }, [activeCircuit, mutateProject, selectedGateIds, showToast]);
 
   // --- Wire Actions ---
 
@@ -712,6 +684,7 @@ export function useProjectStore() {
       const id = uid('w');
       mutateProject((d) => {
         const circ = d.circuits[d.activeCircuitId];
+        if (!circ) return;
         const mode = overrideMode ?? d.settings.routeMode;
         const points =
           customPoints && customPoints.length >= 2
@@ -748,6 +721,7 @@ export function useProjectStore() {
     ) => {
       mutateProject((d) => {
         const circ = d.circuits[d.activeCircuitId];
+        if (!circ) return;
         const w = circ.wires.find((x) => x.id === wireId);
         if (!w || w.points.length < 2) return;
 
@@ -814,6 +788,7 @@ export function useProjectStore() {
     (wireId: string, patch: Partial<Wire>) => {
       mutateProject((d) => {
         const circ = d.circuits[d.activeCircuitId];
+        if (!circ) return;
         const w = circ.wires.find((x) => x.id === wireId);
         if (!w) return;
         Object.assign(w, patch);
@@ -835,6 +810,7 @@ export function useProjectStore() {
     (wireId: string, points: Point[], recordHistory = true) => {
       mutateProject((d) => {
         const circ = d.circuits[d.activeCircuitId];
+        if (!circ) return;
         const w = circ.wires.find((x) => x.id === wireId);
         if (!w) return;
         w.points = points;
@@ -847,6 +823,7 @@ export function useProjectStore() {
     (wireId: string) => {
       mutateProject((d) => {
         const circ = d.circuits[d.activeCircuitId];
+        if (!circ) return;
         const w = circ.wires.find((x) => x.id === wireId);
         if (!w) return;
         const targets = new Set<string>();
@@ -864,13 +841,15 @@ export function useProjectStore() {
   );
 
   const rerouteAllWires = useCallback(() => {
+    if (!activeCircuit) return;
     mutateProject((d) => {
       const circ = d.circuits[d.activeCircuitId];
+      if (!circ) return;
       const allIds = new Set(circ.gates.map((g) => g.id));
       circ.wires = rerouteWiresForGates(allIds, circ, d);
     });
     showToast('全ワイヤーを自動再配線しました');
-  }, [mutateProject, showToast]);
+  }, [activeCircuit, mutateProject, showToast]);
 
   // --- Selection, Delete, Copy, Paste, Duplicate ---
 
@@ -878,6 +857,7 @@ export function useProjectStore() {
     if (selectedGateIds.size === 0 && selectedWireIds.size === 0) return;
     mutateProject((d) => {
       const circ = d.circuits[d.activeCircuitId];
+      if (!circ) return;
       circ.gates = circ.gates.filter((g) => !selectedGateIds.has(g.id));
       circ.wires = circ.wires.filter((w) => {
         if (selectedWireIds.has(w.id)) return false;
@@ -892,7 +872,7 @@ export function useProjectStore() {
   }, [mutateProject, selectedGateIds, selectedWireIds]);
 
   const copySelection = useCallback(() => {
-    if (selectedGateIds.size === 0) return;
+    if (!activeCircuit || selectedGateIds.size === 0) return;
     const gates = activeCircuit.gates.filter((g) => selectedGateIds.has(g.id));
     const wires = activeCircuit.wires.filter(
       (w) =>
@@ -904,13 +884,14 @@ export function useProjectStore() {
 
   const pasteItems = useCallback(
     (items: ClipboardData, offsetX = 40, offsetY = 40) => {
-      if (items.gates.length === 0) return;
+      if (!activeCircuit || items.gates.length === 0) return;
       const idMap = new Map<string, string>();
       const newGateIds = new Set<string>();
       const newWireIds = new Set<string>();
 
       mutateProject((d) => {
         const circ = d.circuits[d.activeCircuitId];
+        if (!circ) return;
         for (const g of items.gates) {
           const nid = uid('g');
           idMap.set(g.id, nid);
@@ -944,7 +925,7 @@ export function useProjectStore() {
       setSelectedGateIds(newGateIds);
       setSelectedWireIds(newWireIds);
     },
-    [mutateProject],
+    [activeCircuit, mutateProject],
   );
 
   const pasteClipboard = useCallback(() => {
@@ -953,7 +934,7 @@ export function useProjectStore() {
   }, [clipboard, pasteItems]);
 
   const duplicateSelection = useCallback(() => {
-    if (selectedGateIds.size === 0) return;
+    if (!activeCircuit || selectedGateIds.size === 0) return;
     const gates = activeCircuit.gates.filter((g) => selectedGateIds.has(g.id));
     const wires = activeCircuit.wires.filter(
       (w) =>
@@ -963,6 +944,7 @@ export function useProjectStore() {
   }, [activeCircuit, pasteItems, selectedGateIds]);
 
   const selectAll = useCallback(() => {
+    if (!activeCircuit) return;
     setSelectedGateIds(new Set(activeCircuit.gates.map((g) => g.id)));
     setSelectedWireIds(new Set(activeCircuit.wires.map((w) => w.id)));
   }, [activeCircuit]);
@@ -1063,19 +1045,26 @@ export function useProjectStore() {
           }
           d.circuits[cloned.id] = cloned;
         }
-        // Automatically place the imported top module on the active canvas!
+        // Automatically place the imported top module on the active canvas (or open its tab if 0 tabs open)
         if (topId && idRemap.has(topId)) {
           const modId = idRemap.get(topId)!;
           const modDoc = d.circuits[modId];
-          d.circuits[d.activeCircuitId].gates.push({
-            id: uid('g'),
-            type: 'SUBCIRCUIT',
-            x: snapToGrid(320, d.settings.gridSize),
-            y: snapToGrid(240, d.settings.gridSize),
-            rotation: 0,
-            label: modDoc.name || filename.replace(/\.json$/i, ''),
-            props: { subcircuitId: modId, displayMode: 'live' },
-          });
+          const activeDoc = d.circuits[d.activeCircuitId];
+          if (activeDoc) {
+            activeDoc.gates.push({
+              id: uid('g'),
+              type: 'SUBCIRCUIT',
+              x: snapToGrid(320, d.settings.gridSize),
+              y: snapToGrid(240, d.settings.gridSize),
+              rotation: 0,
+              label: modDoc.name || filename.replace(/\.json$/i, ''),
+              props: { subcircuitId: modId, displayMode: 'live' },
+            });
+          } else {
+            const curTabs = resolveOpenTabIds(d);
+            d.openTabIds = curTabs.includes(modId) ? curTabs : [...curTabs, modId];
+            d.activeCircuitId = modId;
+          }
         }
       });
       showToast(`外部ファイル "${filename}" をモジュールとして読み込みました`);
@@ -1091,9 +1080,7 @@ export function useProjectStore() {
       const result = importVerilogFilesToCircuits(files, options);
       mutateProject((d) => {
         // Capture current open tabs BEFORE adding imported submodules/stubs
-        const curTabs = d.openTabIds?.length
-          ? d.openTabIds.filter((id) => Boolean(d.circuits[id]))
-          : Object.keys(d.circuits).filter((id) => !d.circuits[id].isStub);
+        const curTabs = resolveOpenTabIds(d);
         for (const c of result.circuits) {
           d.circuits[c.id] = c;
         }
@@ -1175,12 +1162,8 @@ export function useProjectStore() {
           }
         }
         if (d.activeCircuitId === circuitId) {
-          const remaining = d.openTabIds?.filter((id) => Boolean(d.circuits[id])) ?? [];
-          const fallback = pickPreviousTab(circuitId, remaining, d.circuits);
-          d.activeCircuitId = fallback;
-          if (d.openTabIds && !d.openTabIds.includes(fallback)) {
-            d.openTabIds.push(fallback);
-          }
+          const remaining = resolveOpenTabIds(d);
+          d.activeCircuitId = pickPreviousTab(circuitId, remaining, d.circuits);
         }
       });
       setSelectedGateIds(new Set());
@@ -1230,13 +1213,13 @@ export function useProjectStore() {
           d.openTabIds = [blankId];
           d.activeCircuitId = blankId;
         } else {
-          const nextTabs = (d.openTabIds ?? []).filter(
-            (id) => !removeIds.has(id) && Boolean(d.circuits[id]),
-          );
-          const fallback = nextTabs[0] ?? remainingNonStubs[0].id;
-          d.openTabIds = nextTabs.length > 0 ? nextTabs : [fallback];
-          if (removeIds.has(d.activeCircuitId) || !d.circuits[d.activeCircuitId]) {
-            d.activeCircuitId = fallback;
+          const nextTabs = resolveOpenTabIds(d).filter((id) => !removeIds.has(id));
+          d.openTabIds = nextTabs;
+          if (
+            removeIds.has(d.activeCircuitId) ||
+            (d.activeCircuitId && !d.circuits[d.activeCircuitId])
+          ) {
+            d.activeCircuitId = nextTabs[nextTabs.length - 1] ?? '';
           }
         }
       });
@@ -1261,9 +1244,7 @@ export function useProjectStore() {
           if (!b) return;
           b.topCircuitId = circuitId;
           b.topModuleName = mod.name;
-          const curTabs = d.openTabIds?.length
-            ? d.openTabIds.filter((id) => Boolean(d.circuits[id]))
-            : Object.keys(d.circuits).filter((id) => !d.circuits[id].isStub);
+          const curTabs = resolveOpenTabIds(d);
           d.openTabIds = curTabs.includes(circuitId) ? curTabs : [...curTabs, circuitId];
           d.activeCircuitId = circuitId;
         },
@@ -1407,7 +1388,7 @@ export function useProjectStore() {
     createNewCircuit,
     createNewHdlCircuit,
     renameCircuit,
-    deleteCircuit,
+    closeCircuitTab,
     updateSymbolConfig,
     addGate,
     moveGates,

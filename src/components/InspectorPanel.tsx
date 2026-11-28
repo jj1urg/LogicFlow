@@ -41,7 +41,7 @@ import {
 
 interface InspectorPanelProps {
   project: ProjectDocument;
-  circuit: CircuitDocument;
+  circuit: CircuitDocument | null;
   snapshot: SimulationSnapshot | null;
   simActive: boolean;
   editLocked: boolean;
@@ -100,22 +100,23 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
   onToggleWatchPanel,
   onCloseSidebar,
 }) => {
-  const activeWatchTargets = watchTargets.filter((t) => t.circuitId === circuit.id);
+  const activeWatchTargets = circuit ? watchTargets.filter((t) => t.circuitId === circuit.id) : [];
   const sampledWatch =
-    simActive && snapshot && activeWatchTargets.length > 0
+    circuit && simActive && snapshot && activeWatchTargets.length > 0
       ? sampleWatchedSignals(activeWatchTargets, circuit, project, snapshot)
       : {};
   const selectedGate =
-    selectedGateIds.size === 1
+    circuit && selectedGateIds.size === 1
       ? (circuit.gates.find((g) => selectedGateIds.has(g.id)) ?? null)
       : null;
 
   const selectedWire =
-    selectedGateIds.size === 0 && selectedWireIds.size === 1
+    circuit && selectedGateIds.size === 0 && selectedWireIds.size === 1
       ? (circuit.wires.find((w) => selectedWireIds.has(w.id)) ?? null)
       : null;
 
-  const totalSelected = selectedGateIds.size + selectedWireIds.size;
+  const totalSelected = circuit ? selectedGateIds.size + selectedWireIds.size : 0;
+  const nonStubCount = Object.values(project.circuits).filter((c) => !c.isStub).length;
 
   return (
     <aside className="inspector-panel">
@@ -154,7 +155,17 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
             実行モード中（読み取り専用）— 編集するには上部の「実行中（編集に戻る）」を押してください
           </div>
         )}
-        {selectedGate ? (
+        {!circuit ? (
+          <div className="inspector-section">
+            <div className="section-title">開いているタブがありません</div>
+            <p className="muted-text">
+              現在プロジェクト内には <strong>{nonStubCount}</strong> 個のモジュール定義があります。
+            </p>
+            <p className="muted-text">
+              左のコンポーネントパレットまたは中央のスタート画面からモジュールを開くか、新しく作成してください。
+            </p>
+          </div>
+        ) : selectedGate ? (
           <GateInspector
             gate={selectedGate}
             project={project}

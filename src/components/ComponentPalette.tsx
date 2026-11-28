@@ -139,11 +139,18 @@ export const ComponentPalette: React.FC<ComponentPaletteProps> = ({
     () => Object.values(project.circuits).filter((c) => !c.isStub).length,
     [project.circuits],
   );
+  const hasActiveCanvas = Boolean(
+    project.activeCircuitId && project.circuits[project.activeCircuitId],
+  );
 
   const suppressClickRef = useRef(false);
 
   const handleDragStart = (e: React.DragEvent, type: GateType, subcircuitId?: string) => {
-    if (editLocked || (subcircuitId && subcircuitId === project.activeCircuitId)) {
+    if (
+      editLocked ||
+      !hasActiveCanvas ||
+      (subcircuitId && subcircuitId === project.activeCircuitId)
+    ) {
       e.preventDefault();
       return;
     }
@@ -162,7 +169,13 @@ export const ComponentPalette: React.FC<ComponentPaletteProps> = ({
    *   and close the sidebar manually.
    */
   const handleTouchStartItem = (e: React.TouchEvent, type: GateType, subcircuitId?: string) => {
-    if (editLocked || (subcircuitId && subcircuitId === project.activeCircuitId)) return;
+    if (
+      editLocked ||
+      !hasActiveCanvas ||
+      (subcircuitId && subcircuitId === project.activeCircuitId)
+    ) {
+      return;
+    }
     if (e.touches.length !== 1) return;
     const t0 = e.touches[0];
     const startX = t0.clientX;
@@ -250,7 +263,7 @@ export const ComponentPalette: React.FC<ComponentPaletteProps> = ({
 
   const renderModuleRow = (c: CircuitDocument, opts?: { hdlProjectId: string; isTop: boolean }) => {
     const isActive = c.id === project.activeCircuitId;
-    const canPlace = !editLocked && !isActive;
+    const canPlace = !editLocked && hasActiveCanvas && !isActive;
     const hasHdl = Boolean(c.hdlSource || c.hdlFileSource);
 
     return (
@@ -272,7 +285,9 @@ export const ComponentPalette: React.FC<ComponentPaletteProps> = ({
         title={
           isActive
             ? `${c.name}（現在表示中）`
-            : `${c.name} をクリック/ドラッグで配置（右ボタンから中身を開く・削除できます）`
+            : !hasActiveCanvas
+              ? `${c.name} をクリックして回路タブを開く`
+              : `${c.name} をクリック/ドラッグで配置（右ボタンから中身を開く・削除できます）`
         }
       >
         <span className={`item-badge ${opts?.isTop ? 'badge-top-mod' : 'badge-mod'}`}>
@@ -329,7 +344,7 @@ export const ComponentPalette: React.FC<ComponentPaletteProps> = ({
 
   const renderTreeNode = (node: HdlModuleTreeNode, hdlProjectId: string, depth: number) => {
     const isActive = node.circuitId === project.activeCircuitId;
-    const canPlace = !editLocked && !isActive;
+    const canPlace = !editLocked && hasActiveCanvas && !isActive;
     const hasChildren = node.children.length > 0;
     const nodeKey = `tree:${node.key}`;
     const isCollapsed = Boolean(collapsed[nodeKey]);
@@ -552,7 +567,7 @@ export const ComponentPalette: React.FC<ComponentPaletteProps> = ({
                   <div
                     key={item.type}
                     className="palette-item"
-                    draggable={!editLocked}
+                    draggable={!editLocked && hasActiveCanvas}
                     onDragStart={(e) => handleDragStart(e, item.type)}
                     onDragEnd={onDragEndGate}
                     onTouchStart={(e) => handleTouchStartItem(e, item.type)}

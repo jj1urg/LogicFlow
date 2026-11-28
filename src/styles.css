@@ -2067,6 +2067,116 @@ body,
   pointer-events: none;
 }
 
+/* --- 0-Tab Empty Workspace Start Screen --- */
+.empty-workspace {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 28px 20px;
+  background:
+    radial-gradient(circle at 50% 35%, rgba(56, 189, 248, 0.06), transparent 60%), #0b1120;
+  overflow-y: auto;
+}
+
+.empty-workspace-card {
+  width: 100%;
+  max-width: 480px;
+  padding: 28px 24px;
+  border-radius: 14px;
+  background: rgba(15, 23, 42, 0.88);
+  border: 1px solid var(--border-strong);
+  box-shadow: 0 20px 44px rgba(0, 0, 0, 0.45);
+  text-align: center;
+}
+
+.empty-workspace-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 54px;
+  height: 54px;
+  border-radius: 14px;
+  background: rgba(34, 197, 94, 0.12);
+  border: 1px solid rgba(34, 197, 94, 0.35);
+  margin-bottom: 14px;
+}
+
+.empty-workspace-title {
+  margin: 0 0 8px;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.empty-workspace-desc {
+  margin: 0 0 18px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+
+.empty-workspace-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+
+.empty-workspace-modules {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+  text-align: left;
+}
+
+.empty-workspace-sub {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-bottom: 10px;
+}
+
+.empty-module-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.empty-module-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 7px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-strong);
+  color: var(--text-main);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background 0.12s,
+    border-color 0.12s;
+}
+
+.empty-module-chip .tab-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent-blue);
+}
+
+.empty-module-chip:hover {
+  background: var(--bg-hover);
+  border-color: var(--accent-blue);
+  color: #e0f2fe;
+}
+
 .mini-btn.active-watch {
   background: rgba(34, 197, 94, 0.16);
   border-color: rgba(34, 197, 94, 0.55);

@@ -23,6 +23,7 @@ import {
   X,
   Zap,
 } from 'lucide-react';
+import { resolveOpenTabIds } from '../core/tabs';
 import { ProjectDocument, SubcircuitDisplayMode } from '../core/types';
 import { APP_VERSION } from '../core/version';
 
@@ -36,7 +37,7 @@ interface TopBarProps {
   onSelectCircuit: (id: string) => void;
   onNewCircuit: () => void;
   onNewHdlCircuit: () => void;
-  onDeleteCircuit: (id: string) => void;
+  onCloseTab: (id: string) => void;
   onUndo: () => void;
   onRedo: () => void;
   onToggleSimMode: () => void;
@@ -71,7 +72,7 @@ export const TopBar: React.FC<TopBarProps> = ({
   onSelectCircuit,
   onNewCircuit,
   onNewHdlCircuit,
-  onDeleteCircuit,
+  onCloseTab,
   onUndo,
   onRedo,
   onToggleSimMode,
@@ -98,11 +99,11 @@ export const TopBar: React.FC<TopBarProps> = ({
   const openFileRef = useRef<HTMLInputElement>(null);
   const importModRef = useRef<HTMLInputElement>(null);
   const { settings } = project;
-  const openIds = project.openTabIds?.length
-    ? project.openTabIds.filter((id) => Boolean(project.circuits[id]))
-    : Object.keys(project.circuits).filter((id) => !project.circuits[id].isStub);
+  const openIds = resolveOpenTabIds(project);
   const circuits = openIds.map((id) => project.circuits[id]);
-  const activeCircuit = project.circuits[project.activeCircuitId];
+  const activeCircuit = project.activeCircuitId
+    ? (project.circuits[project.activeCircuitId] ?? null)
+    : null;
   const activeHasHdl = Boolean(activeCircuit?.hdlSource || activeCircuit?.hdlFileSource);
 
   return (
@@ -258,6 +259,7 @@ export const TopBar: React.FC<TopBarProps> = ({
           </button>
           <button
             className="pill-btn"
+            disabled={!activeCircuit}
             onClick={onOpenNetlistExport}
             title="ネットリスト出力 (Verilog / JSON / DOT)"
           >
@@ -309,18 +311,17 @@ export const TopBar: React.FC<TopBarProps> = ({
               >
                 <span className="tab-dot" />
                 <span className="tab-name">{c.name}</span>
-                {circuits.length > 1 && (
-                  <button
-                    className="tab-close"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onDeleteCircuit(c.id);
-                    }}
-                    title="回路タブを削除"
-                  >
-                    <X size={12} />
-                  </button>
-                )}
+                <button
+                  className="tab-close"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onCloseTab(c.id);
+                  }}
+                  title="タブを閉じる（モジュール定義は左パレットに残ります）"
+                  aria-label={`${c.name} のタブを閉じる`}
+                >
+                  <X size={12} />
+                </button>
               </div>
             );
           })}
@@ -341,6 +342,7 @@ export const TopBar: React.FC<TopBarProps> = ({
         <div className="tabs-actions">
           <button
             className={`mini-btn ${watchPanelOpen ? 'active-watch' : ''}`}
+            disabled={!activeCircuit}
             onClick={onToggleWatchPanel}
             title="信号ウォッチ一覧 & 波形タイムチャートパネルを表示 / 非表示"
           >
@@ -365,6 +367,7 @@ export const TopBar: React.FC<TopBarProps> = ({
           )}
           <button
             className="mini-btn"
+            disabled={!activeCircuit}
             onClick={onOpenSymbolEditor}
             title="この回路のモジュール端子方向・配置を編集"
           >
