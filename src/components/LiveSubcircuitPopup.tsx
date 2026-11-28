@@ -37,15 +37,32 @@ export const LiveSubcircuitPopup: React.FC<LiveSubcircuitPopupProps> = ({
   );
 
   const [box, setBox] = useState(() => {
-    const w = Math.min(760, Math.max(MIN_W, Math.round(window.innerWidth * 0.56)));
-    const h = Math.min(540, Math.max(MIN_H, Math.round(window.innerHeight * 0.6)));
+    const isNarrow = window.innerWidth <= 900;
+    const w = isNarrow
+      ? Math.max(300, window.innerWidth - 16)
+      : Math.min(760, Math.max(MIN_W, Math.round(window.innerWidth * 0.56)));
+    const h = isNarrow
+      ? Math.max(300, Math.round(window.innerHeight * 0.68))
+      : Math.min(540, Math.max(MIN_H, Math.round(window.innerHeight * 0.6)));
     return {
-      x: Math.max(24, Math.round((window.innerWidth - w) / 2) + 40),
-      y: Math.max(88, Math.round((window.innerHeight - h) / 2)),
+      x: isNarrow ? 8 : Math.max(24, Math.round((window.innerWidth - w) / 2) + 40),
+      y: isNarrow ? 76 : Math.max(88, Math.round((window.innerHeight - h) / 2)),
       w,
       h,
     };
   });
+  const [animState, setAnimState] = useState<'enter' | 'open' | 'closing'>('enter');
+
+  // Trigger smooth scale-up entrance animation on mount
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => setAnimState('open'));
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
+  const handleAnimatedClose = useCallback(() => {
+    setAnimState('closing');
+    window.setTimeout(() => onClose(), 160);
+  }, [onClose]);
 
   const canvasWrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -454,7 +471,7 @@ export const LiveSubcircuitPopup: React.FC<LiveSubcircuitPopupProps> = ({
 
   return (
     <div
-      className="live-popup-window"
+      className={`live-popup-window live-popup-${animState}`}
       style={{ left: box.x, top: box.y, width: box.w, height: box.h }}
     >
       {/* Draggable Header Bar */}
@@ -517,7 +534,7 @@ export const LiveSubcircuitPopup: React.FC<LiveSubcircuitPopupProps> = ({
               <span>別タブで編集</span>
             </button>
           )}
-          <button className="icon-btn" onClick={onClose} title="ポップアップを閉じる">
+          <button className="icon-btn" onClick={handleAnimatedClose} title="ポップアップを閉じる">
             <X size={14} />
           </button>
         </div>

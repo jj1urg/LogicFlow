@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import {
   ChevronDown,
   ChevronRight,
@@ -11,6 +11,7 @@ import {
   Search,
   Star,
   Trash2,
+  X,
 } from 'lucide-react';
 import { CATEGORY_LABELS, GATE_CATALOG } from '../core/catalog';
 import { buildHdlModuleTree, HdlModuleTreeNode } from '../core/hdl';
@@ -24,8 +25,12 @@ export interface DragGatePayload {
 interface ComponentPaletteProps {
   project: ProjectDocument;
   editLocked: boolean;
+  isMobile?: boolean;
+  onCloseSidebar?: () => void;
   onQuickAddGate: (type: GateType, subcircuitId?: string) => void;
   onDragStartGate: (payload: DragGatePayload, clientX: number, clientY: number) => void;
+  onDragMoveGate?: (clientX: number, clientY: number) => void;
+  onTouchDropGate?: (payload: DragGatePayload, clientX: number, clientY: number) => void;
   onDragEndGate: () => void;
   onOpenCircuit: (circuitId: string) => void;
   onOpenHdlSource: (circuitId: string) => void;
@@ -56,8 +61,12 @@ const ORDERED_CATEGORIES: GateCategory[] = [
 export const ComponentPalette: React.FC<ComponentPaletteProps> = ({
   project,
   editLocked,
+  isMobile,
+  onCloseSidebar,
   onQuickAddGate,
   onDragStartGate,
+  onDragMoveGate,
+  onTouchDropGate,
   onDragEndGate,
   onOpenCircuit,
   onOpenHdlSource,
@@ -131,6 +140,8 @@ export const ComponentPalette: React.FC<ComponentPaletteProps> = ({
     [project.circuits],
   );
 
+  const suppressClickRef = useRef(false);
+
   const handleDragStart = (e: React.DragEvent, type: GateType, subcircuitId?: string) => {
     if (editLocked || (subcircuitId && subcircuitId === project.activeCircuitId)) {
       e.preventDefault();
@@ -141,6 +152,100 @@ export const ComponentPalette: React.FC<ComponentPaletteProps> = ({
     // Suppress the default browser list-row drag ghost so we render the real gate/module symbol instead!
     e.dataTransfer.setDragImage(getTransparentDragImage(), 0, 0);
     onDragStartGate({ type, subcircuitId }, e.clientX, e.clientY);
+  };
+
+  /**
+   * Mobile / touch drag-and-drop support:
+   * - Swiping rightward out of the catalog (or holding briefly + moving) initiates a live drag,
+   *   which auto-closes the mobile sidebar so the user can drop directly onto the canvas.
+   * - Normal vertical scroll or tap keeps the sidebar open so the user can tap multiple parts
+   *   and close the sidebar manually.
+   */
+  const handleTouchStartItem = (e: React.TouchEvent, type: GateType, subcircuitId?: string) => {
+    if (editLocked || (subcircuitId && subcircuitId === project.activeCircuitId)) return;
+    if (e.touches.length !== 1) return;
+    const t0 = e.touches[0];
+    const startX = t0.clientX;
+    const startY = t0.clientY;
+    const payload: DragGatePayload = { type, subcircuitId };
+    let dragging = false;
+    let cancelled = false;
+    let lastX = startX;
+    let lastY = startY;
+
+    const holdTimer = window.setTimeout(() => {
+      if (!cancelled && !dragging) {
+        dragging = true;
+        suppressClickRef.current = true;
+        onDragStartGate(payload, lastX, lastY);
+      }
+    }, 260);
+
+    const onMove = (ev: TouchEvent) => {
+      if (ev.touches.length !== 1) return;
+      const t = ev.touches[0];
+      lastX = t.clientX;
+      lastY = t.clientY;
+      const dx = t.clientX - startX;
+      const dy = t.clientY - startY;
+
+      if (!dragging) {
+        // Horizontal drag toward the canvas triggers immediate drag-and-drop
+        if (dx > 14 && dx > Math.abs(dy) * 1.15) {
+          window.clearTimeout(holdTimer);
+          dragging = true;
+          suppressClickRef.current = true;
+          onDragStartGate(payload, t.clientX, t.clientY);
+          ev.preventDefault();
+        } else if (Math.abs(dy) > 12 && Math.abs(dy) > Math.abs(dx)) {
+          // Vertical scroll of the catalog list -> abort drag detection
+          cancelled = true;
+          window.clearTimeout(holdTimer);
+        }
+        return;
+      }
+
+      ev.preventDefault();
+      onDragMoveGate?.(t.clientX, t.clientY);
+    };
+
+    const cleanup = () => {
+      window.clearTimeout(holdTimer);
+      window.removeEventListener('touchmove', onMove);
+      window.removeEventListener('touchend', onEnd);
+      window.removeEventListener('touchcancel', onCancel);
+    };
+
+    const onEnd = (ev: TouchEvent) => {
+      cleanup();
+      if (dragging) {
+        const endTouch = ev.changedTouches[0];
+        const fx = endTouch ? endTouch.clientX : lastX;
+        const fy = endTouch ? endTouch.clientY : lastY;
+        onTouchDropGate?.(payload, fx, fy);
+        onDragEndGate();
+        window.setTimeout(() => {
+          suppressClickRef.current = false;
+        }, 80);
+      }
+    };
+
+    const onCancel = () => {
+      cleanup();
+      if (dragging) {
+        onDragEndGate();
+        suppressClickRef.current = false;
+      }
+    };
+
+    window.addEventListener('touchmove', onMove, { passive: false });
+    window.addEventListener('touchend', onEnd);
+    window.addEventListener('touchcancel', onCancel);
+  };
+
+  const handleTapItem = (fn: () => void) => {
+    if (suppressClickRef.current) return;
+    fn();
   };
 
   const renderModuleRow = (c: CircuitDocument, opts?: { hdlProjectId: string; isTop: boolean }) => {
@@ -155,10 +260,15 @@ export const ComponentPalette: React.FC<ComponentPaletteProps> = ({
         draggable={canPlace}
         onDragStart={(e) => handleDragStart(e, 'SUBCIRCUIT', c.id)}
         onDragEnd={onDragEndGate}
-        onClick={() => {
-          if (canPlace) onQuickAddGate('SUBCIRCUIT', c.id);
-          else onOpenCircuit(c.id);
+        onTouchStart={(e) => {
+          if (canPlace) handleTouchStartItem(e, 'SUBCIRCUIT', c.id);
         }}
+        onClick={() =>
+          handleTapItem(() => {
+            if (canPlace) onQuickAddGate('SUBCIRCUIT', c.id);
+            else onOpenCircuit(c.id);
+          })
+        }
         title={
           isActive
             ? `${c.name}（現在表示中）`
@@ -308,9 +418,25 @@ export const ComponentPalette: React.FC<ComponentPaletteProps> = ({
     <aside className={`palette-panel ${editLocked ? 'panel-locked' : ''}`}>
       <div className="panel-header">
         <span className="panel-title">コンポーネント</span>
-        <span className="panel-hint">
-          {editLocked ? '実行中ロック' : 'ドラッグ or クリック配置'}
-        </span>
+        <div className="panel-header-right">
+          <span className="panel-hint">
+            {editLocked
+              ? '実行中ロック'
+              : isMobile
+                ? '右ドラッグ or タップ配置'
+                : 'ドラッグ or クリック配置'}
+          </span>
+          {onCloseSidebar && (
+            <button
+              className="icon-btn panel-close-btn"
+              onClick={onCloseSidebar}
+              title="サイドバーを閉じる"
+              aria-label="パーツパレットを閉じる"
+            >
+              <X size={14} />
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="palette-search">
@@ -429,7 +555,8 @@ export const ComponentPalette: React.FC<ComponentPaletteProps> = ({
                     draggable={!editLocked}
                     onDragStart={(e) => handleDragStart(e, item.type)}
                     onDragEnd={onDragEndGate}
-                    onClick={() => onQuickAddGate(item.type)}
+                    onTouchStart={(e) => handleTouchStartItem(e, item.type)}
+                    onClick={() => handleTapItem(() => onQuickAddGate(item.type))}
                     title={item.description}
                   >
                     <span className={`item-badge badge-${cat}`}>{item.shortName}</span>

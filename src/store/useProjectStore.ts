@@ -385,6 +385,68 @@ export function useProjectStore() {
     [mutateProject, project.circuits, showToast],
   );
 
+  /** Create a brand-new module from scratch using a starter SystemVerilog template */
+  const createNewHdlCircuit = useCallback(
+    (rawName?: string): string | null => {
+      const nonStubCount = Object.values(project.circuits).filter((c) => !c.isStub).length + 1;
+      const cleaned = (rawName ?? '')
+        .trim()
+        .replace(/[^a-zA-Z0-9_]/g, '_')
+        .replace(/^(\d)/, '_$1');
+      const baseName = cleaned || `hdl_mod_${nonStubCount}`;
+
+      // Avoid colliding with an existing module name in the project
+      const existingNames = new Set(Object.values(project.circuits).map((c) => c.name));
+      let modName = baseName;
+      let suffix = 2;
+      while (existingNames.has(modName)) {
+        modName = `${baseName}_${suffix++}`;
+      }
+
+      const fileName = `${modName}.sv`;
+      const starterSource = [
+        `module ${modName} (`,
+        `  input  logic a,`,
+        `  input  logic b,`,
+        `  output logic y`,
+        `);`,
+        `  assign y = a & b;`,
+        `endmodule`,
+        '',
+      ].join('\n');
+
+      const result = importVerilogFilesToCircuits([{ name: fileName, content: starterSource }], {
+        existingCircuits: project.circuits,
+        topModuleName: modName,
+        projectName: modName,
+      });
+
+      mutateProject((d) => {
+        for (const c of result.circuits) {
+          d.circuits[c.id] = c;
+        }
+        d.hdlProjects = {
+          ...(d.hdlProjects ?? {}),
+          [result.hdlProject.id]: result.hdlProject,
+        };
+        const curTabs = d.openTabIds?.length
+          ? d.openTabIds.filter((tid) => Boolean(d.circuits[tid]))
+          : Object.keys(d.circuits).filter((tid) => !d.circuits[tid]?.isStub);
+        d.openTabIds = curTabs.includes(result.topCircuitId)
+          ? curTabs
+          : [...curTabs, result.topCircuitId];
+        d.activeCircuitId = result.topCircuitId;
+      });
+      setSelectedGateIds(new Set());
+      setSelectedWireIds(new Set());
+      showToast(
+        `新規 HDL モジュール "${modName}" を作成しました（コードを編集して論理合成できます）`,
+      );
+      return result.topCircuitId;
+    },
+    [mutateProject, project.circuits, showToast],
+  );
+
   const renameCircuit = useCallback(
     (circuitId: string, name: string) => {
       const trimmed = name.trim();
@@ -1343,6 +1405,7 @@ export function useProjectStore() {
     stepSimulation,
     setActiveCircuit,
     createNewCircuit,
+    createNewHdlCircuit,
     renameCircuit,
     deleteCircuit,
     updateSymbolConfig,

@@ -19,6 +19,7 @@ import { importVerilogToCircuits } from '../src/core/hdl';
 import { BIT_0, BIT_1, BIT_X, BIT_Z, fromInt, fromLiteral } from '../src/core/logic4';
 import { createEmptySequentialState, simulateCircuit } from '../src/core/simulator';
 import { CircuitDocument, ProjectDocument } from '../src/core/types';
+import { formatAppVersion } from '../src/core/version';
 
 function makeProject(circuits: CircuitDocument[], topId: string): ProjectDocument {
   const map: Record<string, CircuitDocument> = {};
@@ -337,5 +338,23 @@ describe('Live Subcircuit Popup & Signal Watch / Waveform Helpers', () => {
     // Corrupted JSON or invalid objects return empty safely
     expect(parseStoredWatchTargets('{bad json')).toEqual([]);
     expect(parseStoredWatchTargets(null)).toEqual([]);
+  });
+
+  it('6. formats package.json SemVer version into LogicFlow short vx.y and full vx.y-rz.w strings', () => {
+    expect(formatAppVersion('0.17.0-r0.0')).toEqual({
+      short: 'v0.17',
+      full: 'v0.17-r0.0',
+      raw: '0.17.0-r0.0',
+    });
+    expect(formatAppVersion('1.2.0-r3.4')).toEqual({
+      short: 'v1.2',
+      full: 'v1.2-r3.4',
+      raw: '1.2.0-r3.4',
+    });
+    expect(formatAppVersion('0.16.0')).toEqual({
+      short: 'v0.16',
+      full: 'v0.16',
+      raw: '0.16.0',
+    });
   });
 });

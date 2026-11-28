@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Viewport } from './canvas/hitTest';
+import { hitTestGate, screenToWorld, Viewport } from './canvas/hitTest';
 import { renderGateSymbolPreview } from './canvas/renderer';
 import { CircuitCanvas } from './components/CircuitCanvas';
 import { ComponentPalette, DragGatePayload } from './components/ComponentPalette';
@@ -115,6 +115,64 @@ export const App: React.FC = () => {
   const [showShortcutsModal, setShowShortcutsModal] = useState(false);
   const [hdlSourceCircuitId, setHdlSourceCircuitId] = useState<string | null>(null);
   const [hdlDockPos, setHdlDockPos] = useState<HdlDockPosition>('bottom');
+  const [hdlAutoEditTrigger, setHdlAutoEditTrigger] = useState(0);
+  const [isMobile, setIsMobile] = useState(() =>
+    typeof window !== 'undefined' ? window.matchMedia('(max-width: 900px)').matches : false,
+  );
+  const [leftSidebarOpen, setLeftSidebarOpen] = useState(() =>
+    typeof window !== 'undefined' ? !window.matchMedia('(max-width: 900px)').matches : true,
+  );
+  const [rightSidebarOpen, setRightSidebarOpen] = useState(() =>
+    typeof window !== 'undefined' ? !window.matchMedia('(max-width: 900px)').matches : true,
+  );
+  const canvasHostRef = useRef<HTMLDivElement>(null);
+
+  // Track responsive mobile breakpoint so sidebars default to drawers on phones/small viewports
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 900px)');
+    const onChange = (e: MediaQueryListEvent) => {
+      setIsMobile(e.matches);
+      if (e.matches) {
+        setLeftSidebarOpen(false);
+        setRightSidebarOpen(false);
+      } else {
+        setLeftSidebarOpen(true);
+        setRightSidebarOpen(true);
+      }
+    };
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+
+  const toggleLeftSidebar = useCallback(() => {
+    setLeftSidebarOpen((open) => {
+      const next = !open;
+      if (next && isMobile) setRightSidebarOpen(false);
+      return next;
+    });
+  }, [isMobile]);
+
+  const toggleRightSidebar = useCallback(() => {
+    setRightSidebarOpen((open) => {
+      const next = !open;
+      if (next && isMobile) setLeftSidebarOpen(false);
+      return next;
+    });
+  }, [isMobile]);
+
+  const handleNewHdlCircuit = useCallback(() => {
+    const nonStubCount = Object.values(project.circuits).filter((c) => !c.isStub).length + 1;
+    const raw = window.prompt(
+      '新規 HDL モジュール名（英数字・アンダースコア）:',
+      `hdl_mod_${nonStubCount}`,
+    );
+    if (raw === null) return;
+    const cid = store.createNewHdlCircuit(raw);
+    if (cid) {
+      setHdlSourceCircuitId(cid);
+      setHdlAutoEditTrigger((n) => n + 1);
+    }
+  }, [project.circuits, store]);
   const WATCH_STORAGE_KEY = 'logicflow_watch_v1';
   const [livePopupPath, setLivePopupPath] = useState<string[] | null>(null);
   const [showWatchPanel, setShowWatchPanel] = useState(false);
@@ -423,13 +481,55 @@ export const App: React.FC = () => {
 
   const handleQuickAddGate = (type: GateType, subcircuitId?: string) => {
     const vp = viewportRef.current;
-    const cx = (window.innerWidth * 0.45 - vp.x) / vp.zoom;
-    const cy = (window.innerHeight * 0.45 - vp.y) / vp.zoom;
+    const rect = canvasHostRef.current?.getBoundingClientRect();
+    const screenCx = rect ? rect.width * 0.5 : window.innerWidth * 0.45;
+    const screenCy = rect ? rect.height * 0.48 : window.innerHeight * 0.45;
+    const cx = (screenCx - vp.x) / vp.zoom;
+    const cy = (screenCy - vp.y) / vp.zoom;
     const jitter = (Math.random() - 0.5) * 60;
     const extra = subcircuitId ? { subcircuitId, displayMode: 'live' as const } : undefined;
     const label = subcircuitId ? project.circuits[subcircuitId]?.name : undefined;
     store.addGate(type, cx + jitter, cy + jitter, extra, label);
+    // On mobile tap-add, keep the left sidebar open per UX design and give clear feedback
+    if (isMobile) {
+      const displayName = subcircuitId
+        ? (project.circuits[subcircuitId]?.name ?? 'モジュール')
+        : GATE_CATALOG[type].name;
+      store.showToast(`${displayName} をキャンバスへ配置しました`);
+    }
   };
+
+  const handleTouchDropGate = useCallback(
+    (payload: DragGatePayload, clientX: number, clientY: number) => {
+      const host = canvasHostRef.current;
+      if (!host) return;
+      const rect = host.getBoundingClientRect();
+      if (
+        clientX < rect.left ||
+        clientX > rect.right ||
+        clientY < rect.top ||
+        clientY > rect.bottom
+      ) {
+        return;
+      }
+      const sx = clientX - rect.left;
+      const sy = clientY - rect.top;
+      const worldPt = screenToWorld({ x: sx, y: sy }, viewportRef.current);
+      const hit = hitTestGate(worldPt, activeCircuit, project);
+      if (hit && (hit.type !== payload.type || hit.props.subcircuitId !== payload.subcircuitId)) {
+        store.replaceGate(hit.id, payload.type, payload.subcircuitId);
+      } else {
+        const extra = payload.subcircuitId
+          ? { subcircuitId: payload.subcircuitId, displayMode: 'live' as const }
+          : undefined;
+        const label = payload.subcircuitId
+          ? project.circuits[payload.subcircuitId]?.name
+          : undefined;
+        store.addGate(payload.type, worldPt.x, worldPt.y, extra, label);
+      }
+    },
+    [activeCircuit, project, store],
+  );
 
   const handleAddGateAt = (type: GateType, x: number, y: number, subcircuitId?: string) => {
     const extra = subcircuitId ? { subcircuitId, displayMode: 'live' as const } : undefined;
@@ -491,7 +591,12 @@ export const App: React.FC = () => {
         onRenameProject={store.renameProject}
         onSelectCircuit={store.setActiveCircuit}
         onNewCircuit={() => store.createNewCircuit()}
+        onNewHdlCircuit={handleNewHdlCircuit}
         onDeleteCircuit={store.deleteCircuit}
+        leftSidebarOpen={leftSidebarOpen}
+        rightSidebarOpen={rightSidebarOpen}
+        onToggleLeftSidebar={toggleLeftSidebar}
+        onToggleRightSidebar={toggleRightSidebar}
         onUndo={store.undo}
         onRedo={store.redo}
         onToggleSimMode={() => {
@@ -525,34 +630,52 @@ export const App: React.FC = () => {
       />
 
       <main className="workspace-main">
-        <ComponentPalette
-          project={project}
-          editLocked={editLocked}
-          onQuickAddGate={handleQuickAddGate}
-          onDragStartGate={(payload, cx, cy) => {
-            setDraggingGate(payload);
-            setDragCursor({ x: cx, y: cy });
-            setDragOverCanvas(false);
-          }}
-          onDragEndGate={handleEndDragGate}
-          onOpenCircuit={store.setActiveCircuit}
-          onOpenHdlSource={(cid) => setHdlSourceCircuitId(cid)}
-          onDeleteModule={(cid) => {
-            if (hdlSourceCircuitId === cid) setHdlSourceCircuitId(null);
-            store.removeCustomModule(cid);
-          }}
-          onDeleteHdlProject={(pid) => {
-            const b = project.hdlProjects?.[pid];
-            if (b && hdlSourceCircuitId && b.moduleCircuitIds.includes(hdlSourceCircuitId)) {
-              setHdlSourceCircuitId(null);
-            }
-            store.deleteHdlProject(pid);
-          }}
-          onSetHdlTopModule={store.setHdlProjectTopModule}
-        />
+        {isMobile && (leftSidebarOpen || rightSidebarOpen) && (
+          <div
+            className="mobile-drawer-backdrop"
+            onClick={() => {
+              setLeftSidebarOpen(false);
+              setRightSidebarOpen(false);
+            }}
+          />
+        )}
+
+        <div className={`sidebar-slot sidebar-left ${leftSidebarOpen ? 'open' : 'closed'}`}>
+          <ComponentPalette
+            project={project}
+            editLocked={editLocked}
+            isMobile={isMobile}
+            onCloseSidebar={() => setLeftSidebarOpen(false)}
+            onQuickAddGate={handleQuickAddGate}
+            onDragStartGate={(payload, cx, cy) => {
+              setDraggingGate(payload);
+              setDragCursor({ x: cx, y: cy });
+              setDragOverCanvas(false);
+              // On mobile, dragging a component out of the left catalog auto-closes the drawer!
+              if (isMobile) setLeftSidebarOpen(false);
+            }}
+            onDragMoveGate={(cx, cy) => setDragCursor({ x: cx, y: cy })}
+            onTouchDropGate={handleTouchDropGate}
+            onDragEndGate={handleEndDragGate}
+            onOpenCircuit={store.setActiveCircuit}
+            onOpenHdlSource={(cid) => setHdlSourceCircuitId(cid)}
+            onDeleteModule={(cid) => {
+              if (hdlSourceCircuitId === cid) setHdlSourceCircuitId(null);
+              store.removeCustomModule(cid);
+            }}
+            onDeleteHdlProject={(pid) => {
+              const b = project.hdlProjects?.[pid];
+              if (b && hdlSourceCircuitId && b.moduleCircuitIds.includes(hdlSourceCircuitId)) {
+                setHdlSourceCircuitId(null);
+              }
+              store.deleteHdlProject(pid);
+            }}
+            onSetHdlTopModule={store.setHdlProjectTopModule}
+          />
+        </div>
 
         <div className={`workspace-center ${hdlDockPos === 'right' ? 'dock-row' : 'dock-col'}`}>
-          <div className="workspace-canvas-col">
+          <div ref={canvasHostRef} className="workspace-canvas-col">
             <CircuitCanvas
               project={project}
               circuit={activeCircuit}
@@ -631,6 +754,7 @@ export const App: React.FC = () => {
               }
               dock={hdlDockPos}
               editLocked={editLocked}
+              autoEditTrigger={hdlAutoEditTrigger}
               onChangeDock={setHdlDockPos}
               onSelectModuleHdl={(cid) => setHdlSourceCircuitId(cid)}
               onOpenCircuitTab={store.setActiveCircuit}
@@ -642,35 +766,40 @@ export const App: React.FC = () => {
           )}
         </div>
 
-        <InspectorPanel
-          project={project}
-          circuit={activeCircuit}
-          snapshot={snapshot}
-          simActive={simActive}
-          editLocked={editLocked}
-          selectedGateIds={selectedGateIds}
-          selectedWireIds={selectedWireIds}
-          onUpdateGate={store.updateGate}
-          onReplaceGate={store.replaceGate}
-          onUpdateWire={store.updateWire}
-          onRerouteWire={store.rerouteSingleWire}
-          onRenameCircuit={store.renameCircuit}
-          onOpenCircuit={store.setActiveCircuit}
-          onOpenLiveSubcircuitPopup={(gid) => setLivePopupPath([gid])}
-          onOpenHdlSource={(cid) => setHdlSourceCircuitId(cid)}
-          onOpenMemoryEditor={(gid) => setMemoryGateId(gid)}
-          onOpenSymbolEditor={() => setShowSymbolModal(true)}
-          onDeleteSelection={store.deleteSelection}
-          watchTargets={watchTargets}
-          isWireWatched={isWireWatched}
-          onToggleWatchWire={handleToggleWatchWire}
-          onRemoveWatchTarget={(tid) => setWatchTargets((prev) => prev.filter((t) => t.id !== tid))}
-          onUpdateWatchTarget={(tid, patch) =>
-            setWatchTargets((prev) => prev.map((t) => (t.id === tid ? { ...t, ...patch } : t)))
-          }
-          onReorderWatchTarget={handleReorderWatchTarget}
-          onToggleWatchPanel={() => setShowWatchPanel((v) => !v)}
-        />
+        <div className={`sidebar-slot sidebar-right ${rightSidebarOpen ? 'open' : 'closed'}`}>
+          <InspectorPanel
+            project={project}
+            circuit={activeCircuit}
+            snapshot={snapshot}
+            simActive={simActive}
+            editLocked={editLocked}
+            selectedGateIds={selectedGateIds}
+            selectedWireIds={selectedWireIds}
+            onUpdateGate={store.updateGate}
+            onReplaceGate={store.replaceGate}
+            onUpdateWire={store.updateWire}
+            onRerouteWire={store.rerouteSingleWire}
+            onRenameCircuit={store.renameCircuit}
+            onOpenCircuit={store.setActiveCircuit}
+            onOpenLiveSubcircuitPopup={(gid) => setLivePopupPath([gid])}
+            onOpenHdlSource={(cid) => setHdlSourceCircuitId(cid)}
+            onOpenMemoryEditor={(gid) => setMemoryGateId(gid)}
+            onOpenSymbolEditor={() => setShowSymbolModal(true)}
+            onDeleteSelection={store.deleteSelection}
+            watchTargets={watchTargets}
+            isWireWatched={isWireWatched}
+            onToggleWatchWire={handleToggleWatchWire}
+            onRemoveWatchTarget={(tid) =>
+              setWatchTargets((prev) => prev.filter((t) => t.id !== tid))
+            }
+            onUpdateWatchTarget={(tid, patch) =>
+              setWatchTargets((prev) => prev.map((t) => (t.id === tid ? { ...t, ...patch } : t)))
+            }
+            onReorderWatchTarget={handleReorderWatchTarget}
+            onToggleWatchPanel={() => setShowWatchPanel((v) => !v)}
+            onCloseSidebar={() => setRightSidebarOpen(false)}
+          />
+        </div>
       </main>
 
       {livePopupPath && (

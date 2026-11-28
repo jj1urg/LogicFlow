@@ -161,6 +161,8 @@ interface HdlDockPanelProps {
   hdlProject?: HdlProjectBundle;
   dock: HdlDockPosition;
   editLocked: boolean;
+  /** Incrementing trigger that opens the panel directly into edit mode (e.g. when creating a new HDL module) */
+  autoEditTrigger?: number;
   onChangeDock: (dock: HdlDockPosition) => void;
   onSelectModuleHdl: (circuitId: string) => void;
   onOpenCircuitTab: (circuitId: string) => void;
@@ -180,6 +182,7 @@ export const HdlDockPanel: React.FC<HdlDockPanelProps> = ({
   hdlProject,
   dock,
   editLocked,
+  autoEditTrigger,
   onChangeDock,
   onSelectModuleHdl,
   onOpenCircuitTab,
@@ -197,10 +200,18 @@ export const HdlDockPanel: React.FC<HdlDockPanelProps> = ({
     );
 
   const [scope, setScope] = useState<'module' | 'project' | 'file'>('module');
-  const [editing, setEditing] = useState(false);
+  const [editing, setEditing] = useState(Boolean(autoEditTrigger && autoEditTrigger > 0));
   const [showTree, setShowTree] = useState(
     Boolean(hdlProject && hdlProject.moduleCircuitIds.length > 1),
   );
+  const lastAutoEditRef = useRef<number>(autoEditTrigger ?? 0);
+  useEffect(() => {
+    if (autoEditTrigger && autoEditTrigger !== lastAutoEditRef.current) {
+      lastAutoEditRef.current = autoEditTrigger;
+      setScope('module');
+      setEditing(true);
+    }
+  }, [autoEditTrigger]);
   const [collapsedTree, setCollapsedTree] = useState<Record<string, boolean>>({});
   const [draft, setDraft] = useState(savedModuleSource);
   const [projFiles, setProjFiles] = useState<HdlSourceFile[]>(hdlProject?.files ?? []);

@@ -6,6 +6,23 @@
 
 ---
 
+## 2026-11-28 — v0.17-r0.0 Web メタ・アイコン/OGP・PWA 対応・左上バージョン表記・新規 HDL モジュール作成・スマホ対応＆サイドバー/ポップアップアニメーション
+
+### 実施内容
+
+1. **Web ページアイコン・OGP プレビュー画像・メタタグ・PWA 有効化** (`public/`, `index.html`, `src/main.tsx`):
+   - LogicFlow 専用の SVG ファビコン (`public/favicon.svg`)・PWA/ホーム画面アイコン (`public/icon-192.png`, `public/icon-512.png`, `public/apple-touch-icon.png`)・1200×630 の OGP プレビュー画像 (`public/og-image.png`) を生成・設定しました。
+   - `index.html` に `description` / Open Graph (`og:title`, `og:description`, `og:image`, `og:url`) / Twitter Card / `theme-color` / `manifest.webmanifest` を設定しました。
+   - `public/manifest.webmanifest` と軽量 Service Worker (`public/sw.js`、HTML は Network-first・静的アセットは Stale-while-revalidate) を追加し、プロダクションビルドでオフライン起動・独立ウィンドウインストール（PWA）に対応しました。
+2. **ヘッダ左上のバージョン表記 (`vx.y`)** (`src/core/version.ts`, `src/components/TopBar.tsx`, `src/styles.css`):
+   - `package.json` のバージョンから `vx.y`（ホバー時はフル表記 `vx.y-rz.w`）を自動生成する `formatAppVersion` を追加し、左上 `LogicFlow` ロゴの直後に表示しました。
+3. **新規モジュールを最初から HDL で制作できる機能** (`src/store/useProjectStore.ts`, `src/components/TopBar.tsx`, `src/components/HdlDockPanel.tsx`, `src/App.tsx`):
+   - タブバーの「新規モジュール」の隣に **「新規HDL」** ボタンを追加しました。モジュール名を指定すると最小の SystemVerilog テンプレートを生成・論理合成してタブを作成し、ドッキング HDL パネルをそのまま編集モードで開きます。
+4. **スマートフォン対応 & 左右サイドバー開閉・ライブポップアップ拡大アニメーション** (`src/App.tsx`, `src/components/TopBar.tsx`, `src/components/ComponentPalette.tsx`, `src/components/InspectorPanel.tsx`, `src/components/LiveSubcircuitPopup.tsx`, `src/styles.css`):
+   - 左右サイドバー（パーツパレット／インスペクタ）の開閉トグルと左右スライドアニメーションを実装しました。
+   - スマートフォン等の狭幅画面 (`<= 900px`) では左右サイドバーが初期状態で閉じたドロワー表示になり、左カタログからパーツを **ドラッグ＆ドロップ（タッチの右方向ドラッグ／長押しドラッグ含む）で取り出した場合は自動で左サイドバーが閉じてキャンバスへ配置**、**タップで取り出した場合はサイドバーを閉じずに連続配置でき、ユーザーが手動で閉じてキャンバスへ戻る** 操作を実現しました。
+   - ライブ内部拡大ポップアップの表示・閉鎖時にスムーズな拡大縮小（スケール＋フェード）アニメーションを付与しました。
+
 ## 2026-11-28 — v0.16-r6.0 ダブルクリックでのライブ内部拡大・タブ閉鎖時の直前タブ復帰・ウォッチリスト永続化
 
 ### 実施内容

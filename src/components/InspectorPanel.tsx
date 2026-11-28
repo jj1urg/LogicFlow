@@ -68,6 +68,7 @@ interface InspectorPanelProps {
   onUpdateWatchTarget: (targetId: string, patch: Partial<WatchTarget>) => void;
   onReorderWatchTarget: (targetId: string, dir: -1 | 1) => void;
   onToggleWatchPanel: () => void;
+  onCloseSidebar?: () => void;
 }
 
 export const InspectorPanel: React.FC<InspectorPanelProps> = ({
@@ -96,6 +97,7 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
   onUpdateWatchTarget,
   onReorderWatchTarget,
   onToggleWatchPanel,
+  onCloseSidebar,
 }) => {
   const activeWatchTargets = watchTargets.filter((t) => t.circuitId === circuit.id);
   const sampledWatch =
@@ -121,16 +123,28 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
           <Sliders size={13} style={{ marginRight: 6, verticalAlign: -2 }} />
           インスペクタ
         </span>
-        {totalSelected > 0 && !editLocked && (
-          <button
-            className="danger-mini-btn"
-            onClick={onDeleteSelection}
-            title="選択項目を削除 (Del)"
-          >
-            <Trash2 size={12} />
-            削除
-          </button>
-        )}
+        <div className="panel-header-right">
+          {totalSelected > 0 && !editLocked && (
+            <button
+              className="danger-mini-btn"
+              onClick={onDeleteSelection}
+              title="選択項目を削除 (Del)"
+            >
+              <Trash2 size={12} />
+              削除
+            </button>
+          )}
+          {onCloseSidebar && (
+            <button
+              className="icon-btn panel-close-btn"
+              onClick={onCloseSidebar}
+              title="サイドバーを閉じる"
+              aria-label="インスペクタを閉じる"
+            >
+              <X size={14} />
+            </button>
+          )}
+        </div>
       </div>
 
       <div className={`inspector-scroll ${editLocked ? 'inspector-locked' : ''}`}>

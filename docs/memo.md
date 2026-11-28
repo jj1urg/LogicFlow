@@ -15,8 +15,5 @@ generated:
 
 ## about fixes
 
-
 ## aboud features
 
-* PWA有効化の検討
-* 新規モジュールについて、最初からHDLで制作できる機能

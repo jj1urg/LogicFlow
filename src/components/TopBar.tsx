@@ -9,6 +9,8 @@ import {
   GitBranch,
   Grid,
   HelpCircle,
+  PanelLeft,
+  PanelRight,
   Pause,
   Play,
   Plus,
@@ -24,6 +26,7 @@ import {
   Zap,
 } from 'lucide-react';
 import { ProjectDocument, SubcircuitDisplayMode } from '../core/types';
+import { APP_VERSION } from '../core/version';
 
 interface TopBarProps {
   project: ProjectDocument;
@@ -34,7 +37,12 @@ interface TopBarProps {
   onRenameProject: (name: string) => void;
   onSelectCircuit: (id: string) => void;
   onNewCircuit: () => void;
+  onNewHdlCircuit: () => void;
   onDeleteCircuit: (id: string) => void;
+  leftSidebarOpen: boolean;
+  rightSidebarOpen: boolean;
+  onToggleLeftSidebar: () => void;
+  onToggleRightSidebar: () => void;
   onUndo: () => void;
   onRedo: () => void;
   onToggleSimMode: () => void;
@@ -68,7 +76,12 @@ export const TopBar: React.FC<TopBarProps> = ({
   onRenameProject,
   onSelectCircuit,
   onNewCircuit,
+  onNewHdlCircuit,
   onDeleteCircuit,
+  leftSidebarOpen,
+  rightSidebarOpen,
+  onToggleLeftSidebar,
+  onToggleRightSidebar,
   onUndo,
   onRedo,
   onToggleSimMode,
@@ -107,9 +120,18 @@ export const TopBar: React.FC<TopBarProps> = ({
       <div className="topbar-row main-toolbar">
         {/* Brand + Project Name */}
         <div className="toolbar-group brand-group">
-          <div className="brand-logo">
+          <button
+            className={`icon-btn sidebar-toggle-btn ${leftSidebarOpen ? 'active-blue' : ''}`}
+            onClick={onToggleLeftSidebar}
+            title={leftSidebarOpen ? '左パーツパレットを隠す' : '左パーツパレットを表示'}
+            aria-label="左パーツパレット切替"
+          >
+            <PanelLeft size={15} />
+          </button>
+          <div className="brand-logo" title={`LogicFlow ${APP_VERSION.full}`}>
             <Cpu size={18} className="accent-green" />
             <span>LogicFlow</span>
+            <span className="brand-version">{APP_VERSION.short}</span>
           </div>
           <input
             className="project-name-input"
@@ -266,6 +288,14 @@ export const TopBar: React.FC<TopBarProps> = ({
           <button className="icon-btn" onClick={onOpenShortcuts} title="ショートカット一覧 (?)">
             <HelpCircle size={15} />
           </button>
+          <button
+            className={`icon-btn sidebar-toggle-btn ${rightSidebarOpen ? 'active-blue' : ''}`}
+            onClick={onToggleRightSidebar}
+            title={rightSidebarOpen ? '右インスペクタを隠す' : '右インスペクタを表示'}
+            aria-label="右インスペクタ切替"
+          >
+            <PanelRight size={15} />
+          </button>
 
           <input
             ref={openFileRef}
@@ -323,6 +353,14 @@ export const TopBar: React.FC<TopBarProps> = ({
           <button className="tab-add" onClick={onNewCircuit} title="新しい回路 / モジュールを作成">
             <Plus size={14} />
             <span>新規モジュール</span>
+          </button>
+          <button
+            className="tab-add tab-add-hdl"
+            onClick={onNewHdlCircuit}
+            title="最初から Verilog / SystemVerilog コードで新規モジュールを作成"
+          >
+            <FileCode2 size={13} />
+            <span>新規HDL</span>
           </button>
         </div>
 
