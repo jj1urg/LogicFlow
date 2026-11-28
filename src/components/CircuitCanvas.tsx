@@ -141,6 +141,17 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
   const [hoveredWireHandle, setHoveredWireHandle] = useState<WireHandleHit | null>(null);
   const [wiring, setWiring] = useState<WiringSession | null>(null);
   const [cursorWorld, setCursorWorld] = useState<Point>({ x: 0, y: 0 });
+  const coordsSpanRef = useRef<HTMLSpanElement | null>(null);
+  const lastCoordsRef = useRef<Point>({ x: 0, y: 0 });
+  const updateCoordsDisplay = useCallback((pt: Point) => {
+    const rx = Math.round(pt.x);
+    const ry = Math.round(pt.y);
+    if (lastCoordsRef.current.x === rx && lastCoordsRef.current.y === ry) return;
+    lastCoordsRef.current = { x: rx, y: ry };
+    if (coordsSpanRef.current) {
+      coordsSpanRef.current.textContent = `X: ${rx}, Y: ${ry}`;
+    }
+  }, []);
   const [marquee, setMarquee] = useState<{ x1: number; y1: number; x2: number; y2: number } | null>(
     null,
   );
@@ -814,6 +825,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
     const screenPt = getLocalScreenPt(e.clientX, e.clientY);
     const curVp = pendingVpRef.current ?? vp;
     const worldPt = screenToWorld(screenPt, curVp);
+    updateCoordsDisplay(worldPt);
     if (wiring) setCursorWorld(worldPt);
 
     const d = dragRef.current;
@@ -1133,6 +1145,10 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
         const factor = dy < 0 ? 1.12 : 1 / 1.12;
         zoomAtScreenPt(e.clientX, e.clientY, factor);
       }
+      const rect = canvas.getBoundingClientRect();
+      updateCoordsDisplay(
+        screenToWorld({ x: e.clientX - rect.left, y: e.clientY - rect.top }, vpStateRef.current),
+      );
     };
 
     // Safari / WebKit trackpad pinch gesture events
@@ -1221,6 +1237,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
         const ctx = touchCtxRef.current;
         const curZoom = vpStateRef.current.zoom;
         const worldPt = clientToWorld(t.clientX, t.clientY);
+        updateCoordsDisplay(worldPt);
 
         const pinHit = !ctx.editLocked
           ? hitTestPin(worldPt, ctx.circuit, ctx.project, 18 / curZoom)
@@ -1328,6 +1345,9 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
           const wy = (sy - movedY) / prev.zoom;
           return { zoom: newZoom, x: sx - wx * newZoom, y: sy - wy * newZoom };
         });
+        updateCoordsDisplay(
+          screenToWorld({ x: rect.width / 2, y: rect.height / 2 }, vpStateRef.current),
+        );
         pinchState = { dist, cx, cy };
         return;
       }
@@ -1361,10 +1381,17 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
               x: prev.x + stepDx,
               y: prev.y + stepDy,
             }));
+            updateCoordsDisplay(
+              screenToWorld(
+                { x: canvas.clientWidth / 2, y: canvas.clientHeight / 2 },
+                vpStateRef.current,
+              ),
+            );
           }
         } else if (singleTouch.mode === 'drag-gate') {
           const cur = touchCtxRef.current;
           const worldPt = clientToWorld(t.clientX, t.clientY);
+          updateCoordsDisplay(worldPt);
           const dx = worldPt.x - singleTouch.startWorld.x;
           const dy = worldPt.y - singleTouch.startWorld.y;
           const gs = cur.project.settings.gridSize;
@@ -1767,8 +1794,8 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
       {/* Floating Bottom Status & Zoom Controls */}
       <div className="canvas-statusbar">
         <div className="statusbar-left">
-          <span className="status-chip status-chip-coords">
-            X: {Math.round(cursorWorld.x)}, Y: {Math.round(cursorWorld.y)}
+          <span ref={coordsSpanRef} className="status-chip status-chip-coords">
+            X: {lastCoordsRef.current.x}, Y: {lastCoordsRef.current.y}
           </span>
           <span className="status-chip status-chip-route">
             {project.settings.routeMode === 'grid' ? 'グリッドフィット配線' : '自由配線'}
