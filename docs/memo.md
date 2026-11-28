@@ -11,10 +11,7 @@ generated:
 
 ## about develop management
 
-
-
 ## about fixes
-
 
 ## aboud features
 

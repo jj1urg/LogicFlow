@@ -2478,6 +2478,8 @@ body,
   border-bottom: 1px solid var(--border-strong);
   cursor: move;
   user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
 }
 
 .live-popup-title-row {
@@ -2584,6 +2586,10 @@ body,
   min-height: 0;
   background: #0b1120;
   overflow: hidden;
+  overscroll-behavior: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
 
 .live-popup-canvas {
@@ -2591,6 +2597,11 @@ body,
   height: 100%;
   display: block;
   cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .live-popup-canvas:active {
@@ -2675,6 +2686,7 @@ body,
   width: 16px;
   height: 16px;
   cursor: nwse-resize;
+  touch-action: none;
   background: linear-gradient(
     135deg,
     transparent 45%,
@@ -3286,5 +3298,10 @@ body,
     height: 4px;
     border-radius: 999px;
     background: #64748b;
+  }
+
+  .live-popup-resize {
+    width: 24px;
+    height: 24px;
   }
 }

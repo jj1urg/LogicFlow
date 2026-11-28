@@ -25,6 +25,7 @@ import {
   rotateLocalPoint,
 } from '../src/core/catalog';
 import { BIT_X, fromInt, toUnsignedInt } from '../src/core/logic4';
+import { createSampleProject } from '../src/core/samples';
 import { createEmptySequentialState, simulateCircuit } from '../src/core/simulator';
 import {
   dragWireSegment,
@@ -977,5 +978,40 @@ describe('Canvas Hit-Testing & Viewport Coordinate Transforms', () => {
     const res3 = applyGateReplacement(circ3, 'ff', 'REGISTER', proj3);
     expect(res3.replaced).toBe(true);
     expect(circ3.wires[0].to).toEqual({ gateId: 'ff', pinId: 'clr' });
+  });
+
+  it('routes 2bit_Adder_Live sample with spacious left-to-right layout and minimal wire detours', () => {
+    const sample = createSampleProject();
+    const main = sample.circuits.circ_main;
+    expect(main).toBeDefined();
+
+    // No two gates overlap
+    for (let i = 0; i < main.gates.length; i++) {
+      const a = getGateBounds(main.gates[i], sample);
+      for (let j = i + 1; j < main.gates.length; j++) {
+        const b = getGateBounds(main.gates[j], sample);
+        const overlaps =
+          a.x < b.x + b.width &&
+          a.x + a.width > b.x &&
+          a.y < b.y + b.height &&
+          a.y + a.height > b.y;
+        expect(overlaps, `${main.gates[i].id} overlaps ${main.gates[j].id}`).toBe(false);
+      }
+    }
+
+    // Every wire should flow cleanly left-to-right with minimal bends (no backward detours)
+    const badWires: string[] = [];
+    for (const w of main.wires) {
+      let backtracks = false;
+      for (let k = 1; k < w.points.length; k++) {
+        if (w.points[k].x < w.points[k - 1].x) backtracks = true;
+      }
+      if (w.points.length > 6 || backtracks) {
+        badWires.push(
+          `${w.id} (${w.from?.gateId}->${w.to?.gateId}) len=${w.points.length} back=${backtracks} pts=${JSON.stringify(w.points)}`,
+        );
+      }
+    }
+    expect(badWires).toEqual([]);
   });
 });

@@ -1,6 +1,6 @@
 import { getGatePins, getPinWorldPos, getPinWorldSide, GRID_SIZE } from './catalog';
 import { routeWire } from './routing';
-import { CircuitDocument, GateInstance, PinRef, ProjectDocument, Wire } from './types';
+import { CircuitDocument, PinRef, ProjectDocument, Wire } from './types';
 
 function connect(
   circuit: CircuitDocument,
@@ -131,6 +131,7 @@ export function createSampleProject(): ProjectDocument {
   };
 
   // 2. Main Circuit: 2-bit Ripple Adder using Live Peek-Inside FullAdder modules + 7-Seg
+  // Staggered left-to-right ripple-carry layout with wide horizontal channels so wires route cleanly with minimal detours
   const mainAdder: CircuitDocument = {
     id: 'circ_main',
     name: '2bit_Adder_Live',
@@ -139,7 +140,7 @@ export function createSampleProject(): ProjectDocument {
       {
         id: 'sw_a0',
         type: 'TOGGLE',
-        x: 100,
+        x: 80,
         y: 120,
         rotation: 0,
         label: 'A0',
@@ -148,7 +149,7 @@ export function createSampleProject(): ProjectDocument {
       {
         id: 'sw_b0',
         type: 'TOGGLE',
-        x: 100,
+        x: 80,
         y: 180,
         rotation: 0,
         label: 'B0',
@@ -157,7 +158,7 @@ export function createSampleProject(): ProjectDocument {
       {
         id: 'sw_cin',
         type: 'TOGGLE',
-        x: 100,
+        x: 80,
         y: 240,
         rotation: 0,
         label: 'Cin',
@@ -166,8 +167,8 @@ export function createSampleProject(): ProjectDocument {
       {
         id: 'sw_a1',
         type: 'TOGGLE',
-        x: 100,
-        y: 340,
+        x: 80,
+        y: 360,
         rotation: 0,
         label: 'A1',
         props: { bitWidth: 1, value: '1' },
@@ -175,8 +176,8 @@ export function createSampleProject(): ProjectDocument {
       {
         id: 'sw_b1',
         type: 'TOGGLE',
-        x: 100,
-        y: 400,
+        x: 80,
+        y: 420,
         rotation: 0,
         label: 'B1',
         props: { bitWidth: 1, value: '0' },
@@ -185,7 +186,7 @@ export function createSampleProject(): ProjectDocument {
       {
         id: 'mod_fa0',
         type: 'SUBCIRCUIT',
-        x: 340,
+        x: 320,
         y: 180,
         rotation: 0,
         label: 'FA_Bit0',
@@ -194,37 +195,37 @@ export function createSampleProject(): ProjectDocument {
       {
         id: 'mod_fa1',
         type: 'SUBCIRCUIT',
-        x: 340,
-        y: 380,
+        x: 620,
+        y: 400,
         rotation: 0,
         label: 'FA_Bit1',
         props: { subcircuitId: 'circ_full_adder', displayMode: 'live' },
       },
 
       {
-        id: 'merge_sum',
-        type: 'SPLITTER',
-        x: 580,
-        y: 260,
-        rotation: 0,
-        label: 'SUM[3:0]',
-        props: { bitWidth: 4, splitMode: 'merge', splitWidths: [1, 1, 1, 1] },
-      },
-      {
         id: 'const_0',
         type: 'CONST',
-        x: 500,
-        y: 340,
+        x: 780,
+        y: 540,
         rotation: 0,
         label: '0',
         props: { bitWidth: 1, value: '0' },
+      },
+      {
+        id: 'merge_sum',
+        type: 'SPLITTER',
+        x: 960,
+        y: 280,
+        rotation: 0,
+        label: 'SUM[3:0]',
+        props: { bitWidth: 4, splitMode: 'merge', splitWidths: [1, 1, 1, 1] },
       },
 
       {
         id: 'led_s0',
         type: 'LED',
-        x: 560,
-        y: 120,
+        x: 620,
+        y: 100,
         rotation: 0,
         label: 'S0',
         props: { bitWidth: 1 },
@@ -232,7 +233,7 @@ export function createSampleProject(): ProjectDocument {
       {
         id: 'led_s1',
         type: 'LED',
-        x: 560,
+        x: 960,
         y: 420,
         rotation: 0,
         label: 'S1',
@@ -241,7 +242,7 @@ export function createSampleProject(): ProjectDocument {
       {
         id: 'led_cout',
         type: 'LED',
-        x: 560,
+        x: 960,
         y: 480,
         rotation: 0,
         label: 'Cout',
@@ -250,8 +251,8 @@ export function createSampleProject(): ProjectDocument {
       {
         id: 'disp_7seg',
         type: 'SEVEN_SEG',
-        x: 740,
-        y: 240,
+        x: 1180,
+        y: 220,
         rotation: 0,
         label: 'RESULT',
         props: { bitWidth: 4, segMode: 'hex' },
@@ -259,7 +260,7 @@ export function createSampleProject(): ProjectDocument {
       {
         id: 'disp_num',
         type: 'NUM_DISPLAY',
-        x: 740,
+        x: 1180,
         y: 360,
         rotation: 0,
         label: 'DEC',
@@ -556,16 +557,16 @@ export function createSampleProject(): ProjectDocument {
   connect(
     mainAdder,
     project,
-    'w_m7',
+    'w_m8',
     { gateId: 'mod_fa0', pinId: 'fa_out_s' },
-    { gateId: 'led_s0', pinId: 'in' },
+    { gateId: 'merge_sum', pinId: 'b0' },
   );
   connect(
     mainAdder,
     project,
-    'w_m8',
+    'w_m7',
     { gateId: 'mod_fa0', pinId: 'fa_out_s' },
-    { gateId: 'merge_sum', pinId: 'b0' },
+    { gateId: 'led_s0', pinId: 'in' },
   );
   connect(
     mainAdder,

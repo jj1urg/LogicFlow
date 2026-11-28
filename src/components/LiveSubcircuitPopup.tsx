@@ -194,29 +194,31 @@ export const LiveSubcircuitPopup: React.FC<LiveSubcircuitPopupProps> = ({
     });
   }, [resolved, project, simActive, hoveredPin, hoveredGateId, renderTick, box.w, box.h]);
 
-  // Global mouse listeners for window drag & resize
+  // Global mouse & touch listeners for popup window drag & resize
   useEffect(() => {
-    const onMove = (e: MouseEvent) => {
+    const applyDrag = (clientX: number, clientY: number) => {
       if (dragWinRef.current) {
         const d = dragWinRef.current;
-        const nx = Math.max(8, Math.min(window.innerWidth - 160, d.origX + (e.clientX - d.startX)));
-        const ny = Math.max(
-          48,
-          Math.min(window.innerHeight - 80, d.origY + (e.clientY - d.startY)),
-        );
+        const nx = Math.max(8, Math.min(window.innerWidth - 160, d.origX + (clientX - d.startX)));
+        const ny = Math.max(48, Math.min(window.innerHeight - 80, d.origY + (clientY - d.startY)));
         setBox((prev) => ({ ...prev, x: nx, y: ny }));
       } else if (resizeWinRef.current) {
         const r = resizeWinRef.current;
-        const nw = Math.max(
-          MIN_W,
-          Math.min(window.innerWidth - 24, r.origW + (e.clientX - r.startX)),
-        );
+        const minW = window.innerWidth <= 900 ? 280 : MIN_W;
+        const minH = window.innerWidth <= 900 ? 240 : MIN_H;
+        const nw = Math.max(minW, Math.min(window.innerWidth - 16, r.origW + (clientX - r.startX)));
         const nh = Math.max(
-          MIN_H,
-          Math.min(window.innerHeight - 64, r.origH + (e.clientY - r.startY)),
+          minH,
+          Math.min(window.innerHeight - 64, r.origH + (clientY - r.startY)),
         );
         setBox((prev) => ({ ...prev, w: nw, h: nh }));
       }
+    };
+    const onMove = (e: MouseEvent) => applyDrag(e.clientX, e.clientY);
+    const onTouchMove = (e: TouchEvent) => {
+      if ((!dragWinRef.current && !resizeWinRef.current) || e.touches.length !== 1) return;
+      e.preventDefault();
+      applyDrag(e.touches[0].clientX, e.touches[0].clientY);
     };
     const onUp = () => {
       dragWinRef.current = null;
@@ -224,13 +226,22 @@ export const LiveSubcircuitPopup: React.FC<LiveSubcircuitPopupProps> = ({
     };
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
+    window.addEventListener('touchmove', onTouchMove, { passive: false });
+    window.addEventListener('touchend', onUp);
+    window.addEventListener('touchcancel', onUp);
     return () => {
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
+      window.removeEventListener('touchmove', onTouchMove);
+      window.removeEventListener('touchend', onUp);
+      window.removeEventListener('touchcancel', onUp);
     };
   }, []);
 
-  // Wheel zoom & pan inside the popup canvas (respects project.settings.inputMode: auto / trackpad / mouse!)
+  const navCtxRef = useRef({ gatePath, onChangeGatePath });
+  navCtxRef.current = { gatePath, onChangeGatePath };
+
+  // Wheel zoom & pan + unified 1-finger/2-finger touch controller (matches CircuitCanvas mobile UX!)
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -331,29 +342,53 @@ export const LiveSubcircuitPopup: React.FC<LiveSubcircuitPopupProps> = ({
       }
     };
 
-    // Two-finger touchscreen pinch & pan
-    let touchState: { dist: number; cx: number; cy: number } | null = null;
+    // Unified 1-finger (pan / double-tap subcircuit dive) & 2-finger (pinch + pan) touch controller
+    let pinchState: { dist: number; cx: number; cy: number } | null = null;
+    let singleTouch: {
+      startX: number;
+      startY: number;
+      lastX: number;
+      lastY: number;
+      moved: boolean;
+    } | null = null;
+    let lastTapInfo: { ts: number; gateId: string } | null = null;
+
     const onTouchStart = (e: TouchEvent) => {
+      // Block iOS Safari full-canvas blue tap flash, callout, and page bounce
+      e.preventDefault();
       if (e.touches.length === 2) {
-        e.preventDefault();
+        singleTouch = null;
         const [t1, t2] = [e.touches[0], e.touches[1]];
-        touchState = {
+        pinchState = {
           dist: Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY),
           cx: (t1.clientX + t2.clientX) / 2,
           cy: (t1.clientY + t2.clientY) / 2,
         };
+        return;
+      }
+      if (e.touches.length === 1) {
+        pinchState = null;
+        const t = e.touches[0];
+        singleTouch = {
+          startX: t.clientX,
+          startY: t.clientY,
+          lastX: t.clientX,
+          lastY: t.clientY,
+          moved: false,
+        };
       }
     };
+
     const onTouchMove = (e: TouchEvent) => {
-      if (e.touches.length === 2 && touchState) {
+      if (e.touches.length === 2 && pinchState) {
         e.preventDefault();
         const [t1, t2] = [e.touches[0], e.touches[1]];
         const dist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
         const cx = (t1.clientX + t2.clientX) / 2;
         const cy = (t1.clientY + t2.clientY) / 2;
-        const panDx = cx - touchState.cx;
-        const panDy = cy - touchState.cy;
-        const factor = touchState.dist > 1 ? dist / touchState.dist : 1;
+        const panDx = cx - pinchState.cx;
+        const panDy = cy - pinchState.cy;
+        const factor = pinchState.dist > 1 ? dist / pinchState.dist : 1;
         const rect = canvas.getBoundingClientRect();
         const sx = cx - rect.left;
         const sy = cy - rect.top;
@@ -366,11 +401,81 @@ export const LiveSubcircuitPopup: React.FC<LiveSubcircuitPopupProps> = ({
         viewportRef.current = { zoom: nextZoom, x: sx - wx * nextZoom, y: sy - wy * nextZoom };
         setZoomPct(Math.round(nextZoom * 100));
         setRenderTick((t) => t + 1);
-        touchState = { dist, cx, cy };
+        pinchState = { dist, cx, cy };
+        return;
+      }
+      if (e.touches.length === 1 && singleTouch) {
+        e.preventDefault();
+        const t = e.touches[0];
+        if (
+          !singleTouch.moved &&
+          Math.hypot(t.clientX - singleTouch.startX, t.clientY - singleTouch.startY) > 6
+        ) {
+          singleTouch.moved = true;
+        }
+        if (singleTouch.moved) {
+          const stepDx = t.clientX - singleTouch.lastX;
+          const stepDy = t.clientY - singleTouch.lastY;
+          if (stepDx !== 0 || stepDy !== 0) {
+            const vp = viewportRef.current;
+            viewportRef.current = { ...vp, x: vp.x + stepDx, y: vp.y + stepDy };
+            setRenderTick((tick) => tick + 1);
+          }
+        }
+        singleTouch.lastX = t.clientX;
+        singleTouch.lastY = t.clientY;
       }
     };
+
     const onTouchEnd = (e: TouchEvent) => {
-      if (e.touches.length < 2) touchState = null;
+      if (pinchState && e.touches.length === 1) {
+        // Hand off smoothly from 2-finger pinch to 1-finger pan without jumping
+        pinchState = null;
+        const rem = e.touches[0];
+        singleTouch = {
+          startX: rem.clientX,
+          startY: rem.clientY,
+          lastX: rem.clientX,
+          lastY: rem.clientY,
+          moved: true,
+        };
+        return;
+      }
+      if (e.touches.length < 2) pinchState = null;
+      if (e.touches.length > 0) return;
+
+      const st = singleTouch;
+      singleTouch = null;
+      if (!st || st.moved) return;
+
+      // Double-tap on a child SUBCIRCUIT dives into it (matching top canvas!)
+      const curResolved = resolvedRef.current;
+      if (!curResolved) return;
+      const rect = canvas.getBoundingClientRect();
+      const world = screenToWorld(
+        { x: st.startX - rect.left, y: st.startY - rect.top },
+        viewportRef.current,
+      );
+      const gate = hitTestGate(world, curResolved.circuit, projectRef.current);
+      if (gate?.type === 'SUBCIRCUIT' && gate.props.subcircuitId) {
+        const now = performance.now();
+        if (lastTapInfo && lastTapInfo.gateId === gate.id && now - lastTapInfo.ts < 340) {
+          lastTapInfo = null;
+          const subDoc = projectRef.current.circuits[gate.props.subcircuitId];
+          if (subDoc && !subDoc.isStub) {
+            navCtxRef.current.onChangeGatePath([...navCtxRef.current.gatePath, gate.id]);
+          }
+          return;
+        }
+        lastTapInfo = { ts: now, gateId: gate.id };
+      } else {
+        lastTapInfo = null;
+      }
+    };
+
+    const onTouchCancel = () => {
+      pinchState = null;
+      singleTouch = null;
     };
 
     canvas.addEventListener('wheel', onWheel, { passive: false });
@@ -379,6 +484,7 @@ export const LiveSubcircuitPopup: React.FC<LiveSubcircuitPopupProps> = ({
     canvas.addEventListener('touchstart', onTouchStart, { passive: false });
     canvas.addEventListener('touchmove', onTouchMove, { passive: false });
     canvas.addEventListener('touchend', onTouchEnd);
+    canvas.addEventListener('touchcancel', onTouchCancel);
     return () => {
       canvas.removeEventListener('wheel', onWheel);
       canvas.removeEventListener('gesturestart', onGestureStart);
@@ -386,6 +492,7 @@ export const LiveSubcircuitPopup: React.FC<LiveSubcircuitPopupProps> = ({
       canvas.removeEventListener('touchstart', onTouchStart);
       canvas.removeEventListener('touchmove', onTouchMove);
       canvas.removeEventListener('touchend', onTouchEnd);
+      canvas.removeEventListener('touchcancel', onTouchCancel);
     };
   }, []);
 
@@ -437,7 +544,10 @@ export const LiveSubcircuitPopup: React.FC<LiveSubcircuitPopupProps> = ({
       return;
     }
     const rect = canvas.getBoundingClientRect();
-    const world = screenToWorld(e.clientX - rect.left, e.clientY - rect.top, viewportRef.current);
+    const world = screenToWorld(
+      { x: e.clientX - rect.left, y: e.clientY - rect.top },
+      viewportRef.current,
+    );
     const pin = hitTestPin(world, circuit, project, 13 / Math.max(0.5, viewportRef.current.zoom));
     setHoveredPin(pin);
     const gate = pin ? null : hitTestGate(world, circuit, project);
@@ -452,7 +562,10 @@ export const LiveSubcircuitPopup: React.FC<LiveSubcircuitPopupProps> = ({
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
-    const world = screenToWorld(e.clientX - rect.left, e.clientY - rect.top, viewportRef.current);
+    const world = screenToWorld(
+      { x: e.clientX - rect.left, y: e.clientY - rect.top },
+      viewportRef.current,
+    );
     const gate = hitTestGate(world, circuit, project);
     if (gate?.type === 'SUBCIRCUIT' && gate.props.subcircuitId) {
       const subDoc = project.circuits[gate.props.subcircuitId];
@@ -474,7 +587,7 @@ export const LiveSubcircuitPopup: React.FC<LiveSubcircuitPopupProps> = ({
       className={`live-popup-window live-popup-${animState}`}
       style={{ left: box.x, top: box.y, width: box.w, height: box.h }}
     >
-      {/* Draggable Header Bar */}
+      {/* Draggable Header Bar (mouse + mobile touch) */}
       <div
         className="live-popup-header"
         onMouseDown={(e) => {
@@ -482,6 +595,15 @@ export const LiveSubcircuitPopup: React.FC<LiveSubcircuitPopupProps> = ({
           dragWinRef.current = {
             startX: e.clientX,
             startY: e.clientY,
+            origX: box.x,
+            origY: box.y,
+          };
+        }}
+        onTouchStart={(e) => {
+          if (e.touches.length !== 1 || (e.target as HTMLElement).closest('button')) return;
+          dragWinRef.current = {
+            startX: e.touches[0].clientX,
+            startY: e.touches[0].clientY,
             origX: box.x,
             origY: box.y,
           };
@@ -597,7 +719,7 @@ export const LiveSubcircuitPopup: React.FC<LiveSubcircuitPopupProps> = ({
         </div>
       )}
 
-      {/* Resize Corner Handle */}
+      {/* Resize Corner Handle (mouse + mobile touch) */}
       <div
         className="live-popup-resize"
         onMouseDown={(e) => {
@@ -606,6 +728,16 @@ export const LiveSubcircuitPopup: React.FC<LiveSubcircuitPopupProps> = ({
           resizeWinRef.current = {
             startX: e.clientX,
             startY: e.clientY,
+            origW: box.w,
+            origH: box.h,
+          };
+        }}
+        onTouchStart={(e) => {
+          if (e.touches.length !== 1) return;
+          e.stopPropagation();
+          resizeWinRef.current = {
+            startX: e.touches[0].clientX,
+            startY: e.touches[0].clientY,
             origW: box.w,
             origH: box.h,
           };
