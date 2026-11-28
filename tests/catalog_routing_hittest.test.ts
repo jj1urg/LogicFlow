@@ -1016,7 +1016,7 @@ describe('Canvas Hit-Testing & Viewport Coordinate Transforms', () => {
     expect(badWires).toEqual([]);
   });
 
-  it('supports 1..4 digit HEX configuration on SEVEN_SEG with clamped bit widths, sizes, and replacement inference', () => {
+  it('supports 1..2 digit HEX configuration on SEVEN_SEG with clamped bit widths, sizes, and replacement inference', () => {
     expect(getSevenSegConfig({ segMode: 'hex' })).toEqual({
       mode: 'hex',
       digits: 1,
@@ -1027,20 +1027,15 @@ describe('Canvas Hit-Testing & Viewport Coordinate Transforms', () => {
       digits: 2,
       bitWidth: 8,
     });
+    // Clamped to 1..2 digits
+    expect(getSevenSegConfig({ segMode: 'hex', segDigits: 0 }).digits).toBe(1);
     expect(getSevenSegConfig({ segMode: 'hex', segDigits: 4 })).toEqual({
       mode: 'hex',
-      digits: 4,
-      bitWidth: 16,
-    });
-    // Clamped to 1..4 digits
-    expect(getSevenSegConfig({ segMode: 'hex', segDigits: 0 }).digits).toBe(1);
-    expect(getSevenSegConfig({ segMode: 'hex', segDigits: 8 })).toEqual({
-      mode: 'hex',
-      digits: 4,
-      bitWidth: 16,
+      digits: 2,
+      bitWidth: 8,
     });
     // Direct mode always 1 digit, 7 bits
-    expect(getSevenSegConfig({ segMode: 'direct', segDigits: 4 })).toEqual({
+    expect(getSevenSegConfig({ segMode: 'direct', segDigits: 2 })).toEqual({
       mode: 'direct',
       digits: 1,
       bitWidth: 7,
@@ -1060,19 +1055,19 @@ describe('Canvas Hit-Testing & Viewport Coordinate Transforms', () => {
       id: 's2',
       props: { segMode: 'hex', segDigits: 2 },
     };
-    const seg4: GateInstance = {
+    const segOver: GateInstance = {
       ...seg1,
       id: 's4',
       props: { segMode: 'hex', segDigits: 4 },
     };
     expect(getGateSize(seg1)).toEqual({ width: 68, height: 96 });
     expect(getGateSize(seg2)).toEqual({ width: 120, height: 96 });
-    expect(getGateSize(seg4)).toEqual({ width: 220, height: 96 });
+    expect(getGateSize(segOver)).toEqual({ width: 120, height: 96 });
     expect(getGatePins(seg1)[0].bitWidth).toBe(4);
     expect(getGatePins(seg2)[0].bitWidth).toBe(8);
-    expect(getGatePins(seg4)[0].bitWidth).toBe(16);
+    expect(getGatePins(segOver)[0].bitWidth).toBe(8);
 
-    // Replacing an 8-bit NUM_DISPLAY with SEVEN_SEG auto-selects 2 digits (8bit)
+    // Replacing a 16-bit NUM_DISPLAY with SEVEN_SEG clamps to 2 digits (8bit)
     const circ: CircuitDocument = {
       id: 'c_seg_rep',
       name: 'SegRep',
@@ -1083,8 +1078,8 @@ describe('Canvas Hit-Testing & Viewport Coordinate Transforms', () => {
           x: 200,
           y: 100,
           rotation: 0,
-          label: 'HEX8',
-          props: { bitWidth: 8, radix: 'hex' },
+          label: 'HEX16',
+          props: { bitWidth: 16, radix: 'hex' },
         },
       ],
       wires: [],

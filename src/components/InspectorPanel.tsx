@@ -551,7 +551,7 @@ const GateInspector: React.FC<{
                 value={p.segMode ?? 'hex'}
                 onChange={(e) => {
                   const nextMode = e.target.value as 'hex' | 'direct';
-                  const digits = Math.max(1, Math.min(4, Math.round(p.segDigits ?? 1)));
+                  const digits = Math.max(1, Math.min(2, Math.round(p.segDigits ?? 1)));
                   onUpdate(
                     {},
                     {
@@ -561,28 +561,26 @@ const GateInspector: React.FC<{
                   );
                 }}
               >
-                <option value="hex">HEX デコーダ (1〜4桁)</option>
+                <option value="hex">HEX デコーダ (1〜2桁)</option>
                 <option value="direct">7bit セグメント直接</option>
               </select>
             </div>
             {(p.segMode ?? 'hex') === 'hex' && (
               <>
                 <div className="field-row">
-                  <label>表示桁数 (最大4桁)</label>
+                  <label>表示桁数 (最大2桁)</label>
                   <select
-                    value={Math.max(1, Math.min(4, Math.round(p.segDigits ?? 1)))}
+                    value={Math.max(1, Math.min(2, Math.round(p.segDigits ?? 1)))}
                     onChange={(e) => {
-                      const digits = Math.max(1, Math.min(4, parseInt(e.target.value, 10) || 1));
+                      const digits = Math.max(1, Math.min(2, parseInt(e.target.value, 10) || 1));
                       onUpdate({}, { segDigits: digits, bitWidth: digits * 4 });
                     }}
                   >
                     <option value={1}>1桁 (4bit)</option>
                     <option value={2}>2桁 (8bit)</option>
-                    <option value={3}>3桁 (12bit)</option>
-                    <option value={4}>4桁 (16bit)</option>
                   </select>
                 </div>
-                <div className="muted-text">※ 16bit 超の表示は「数値表示器」をご利用ください</div>
+                <div className="muted-text">※ 8bit 超の表示は「数値表示器」をご利用ください</div>
               </>
             )}
           </>

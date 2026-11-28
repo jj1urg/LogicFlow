@@ -110,7 +110,7 @@ export const GATE_CATALOG: Record<GateType, GateCatalogEntry> = {
     name: '7セグメント表示器',
     shortName: '7SEG',
     category: 'io',
-    description: '1〜4桁(4〜16bit)HEXデコードまたは7bit直接入力対応の7セグディスプレイ',
+    description: '1〜2桁(4/8bit)HEXデコードまたは7bit直接入力対応の7セグディスプレイ',
     defaultWidth: 68,
     defaultHeight: 96,
     defaultProps: { bitWidth: 4, segMode: 'hex', segDigits: 1 },
@@ -481,7 +481,7 @@ export function getSevenSegConfig(p: GateProps): {
   if (p.segMode === 'direct') {
     return { mode: 'direct', digits: 1, bitWidth: 7 };
   }
-  const digits = Math.max(1, Math.min(4, Math.round(p.segDigits ?? 1)));
+  const digits = Math.max(1, Math.min(2, Math.round(p.segDigits ?? 1)));
   return { mode: 'hex', digits, bitWidth: digits * 4 };
 }
 
@@ -1067,7 +1067,7 @@ export function buildReplacementGate(
     nextProps.bitWidth = oldProps.bitWidth;
   }
   if (oldProps.bitWidth !== undefined && newType === 'SEVEN_SEG') {
-    const digits = Math.max(1, Math.min(4, Math.ceil(oldProps.bitWidth / 4)));
+    const digits = Math.max(1, Math.min(2, Math.ceil(oldProps.bitWidth / 4)));
     nextProps.segMode = 'hex';
     nextProps.segDigits = digits;
     nextProps.bitWidth = digits * 4;

@@ -6,6 +6,13 @@
 
 ---
 
+## 2026-11-29 — v0.19-r1.0 7セグメント表示器の HEX 表示桁数上限を 2 桁 (8bit) 固定へ調整
+
+### 実施内容
+
+- **7セグメント表示器 (`SEVEN_SEG`) の HEX モード桁数上限を 2 桁 (8bit) 固定へ整理** (`src/core/catalog.ts`, `src/core/types.ts`, `src/components/InspectorPanel.tsx`, `tests/catalog_routing_hittest.test.ts`):
+  - 実視認性・省スペース性の観点から選択肢を **`1桁 (4bit)` / `2桁 (8bit)`** の 2 段階に絞り、8bit 超の表示は `NUM_DISPLAY` へ明確に役割分担しました（既存の保存データで 3〜4 桁が指定されていた場合も安全に 2 桁へクランプされます）。
+
 ## 2026-11-29 — v0.19-r0.0 7セグメント表示器の多桁 HEX 表示（1〜4桁 / 最大16bit）対応
 
 ### 実施内容
