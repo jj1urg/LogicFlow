@@ -700,19 +700,21 @@ export const App: React.FC = () => {
               className={`icon-btn canvas-floating-toggle canvas-floating-left ${leftSidebarOpen ? 'is-hidden' : 'is-visible'}`}
               onClick={toggleLeftSidebar}
               title="左パーツパレットを表示"
-              aria-label="左パーツパレットを表示"
+              aria-label="コンポーネントを開く"
               tabIndex={leftSidebarOpen ? -1 : 0}
             >
-              <PanelLeft size={16} />
+              <PanelLeft size={15} />
+              <span>コンポーネントを開く</span>
             </button>
             <button
               className={`icon-btn canvas-floating-toggle canvas-floating-right ${rightSidebarOpen ? 'is-hidden' : 'is-visible'}`}
               onClick={toggleRightSidebar}
               title="右インスペクタを表示"
-              aria-label="右インスペクタを表示"
+              aria-label="インスペクタを開く"
               tabIndex={rightSidebarOpen ? -1 : 0}
             >
-              <PanelRight size={16} />
+              <span>インスペクタを開く</span>
+              <PanelRight size={15} />
             </button>
             {activeCircuit ? (
               <>

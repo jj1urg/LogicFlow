@@ -432,8 +432,8 @@ export const ComponentPalette: React.FC<ComponentPaletteProps> = ({
   return (
     <aside className={`palette-panel ${editLocked ? 'panel-locked' : ''}`}>
       <div className="panel-header">
-        <span className="panel-title">コンポーネント</span>
-        <div className="panel-header-right">
+        <div className="panel-title-stack">
+          <span className="panel-title">コンポーネント</span>
           <span className="panel-hint">
             {editLocked
               ? '実行中ロック'
@@ -441,17 +441,17 @@ export const ComponentPalette: React.FC<ComponentPaletteProps> = ({
                 ? '右ドラッグ or タップ配置'
                 : 'ドラッグ or クリック配置'}
           </span>
-          {onCloseSidebar && (
-            <button
-              className="icon-btn panel-close-btn"
-              onClick={onCloseSidebar}
-              title="左パーツパレットを隠す"
-              aria-label="左パーツパレットを隠す"
-            >
-              <PanelLeft size={15} />
-            </button>
-          )}
         </div>
+        {onCloseSidebar && (
+          <button
+            className="icon-btn panel-close-btn"
+            onClick={onCloseSidebar}
+            title="左パーツパレットを隠す"
+            aria-label="左パーツパレットを隠す"
+          >
+            <PanelLeft size={15} />
+          </button>
+        )}
       </div>
 
       <div className="palette-search">
